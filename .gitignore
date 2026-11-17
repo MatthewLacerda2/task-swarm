@@ -1,0 +1,17 @@
+# Python / tooling
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Run data never belongs in the repository (it lives under the runs root, see config.py)
+runs/
+
+# Secrets
+services/searxng/settings.yml
+*.key
+.env
+
+# Machine-specific files: anything named *.local.* stays on this machine
+*.local.*
+!*.local.example.*

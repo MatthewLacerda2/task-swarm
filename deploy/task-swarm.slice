@@ -1,0 +1,8 @@
+[Unit]
+Description=task-swarm agent sandboxes (all agents together)
+
+[Slice]
+MemoryMax=9G
+MemorySwapMax=0
+CPUQuota=600%
+TasksMax=4096

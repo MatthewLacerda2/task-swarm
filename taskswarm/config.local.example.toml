@@ -1,0 +1,7 @@
+# Copy to config.local.toml (gitignored) to override machine-specific settings.
+
+# Where runs are kept: databases, agent folders, the store, deliverables.
+# runs_root = "/path/to/a/big/drive/task-swarm-runs"
+
+# File holding only the Anthropic API key (chmod 600).
+# api_key_file = "/home/you/.config/task-swarm/anthropic.key"
