@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     summary TEXT,                      -- the worker's latest report
     how TEXT,
     findings TEXT,                     -- the latest reviewer's findings, or why it failed
+    decisions TEXT,                    -- JSON list: what the task's owner ruled after the brief was written
     created REAL NOT NULL,
     updated REAL NOT NULL
 );
@@ -104,8 +105,10 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
-        if "parent" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}:
-            self.conn.execute("ALTER TABLE tasks ADD COLUMN parent TEXT")      # runs made before sub-tasks
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}
+        for column in ("parent", "decisions"):       # runs made by an older version
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")
 
     # --- generic -------------------------------------------------------------------
 

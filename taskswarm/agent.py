@@ -201,7 +201,7 @@ def _save_est(run: Run, agent: str, est: int) -> None:
 
 async def _call(run: Run, agent: str, messages: list[dict], est: int) -> tuple[llm.LLMResponse | None, str]:
     """One sampling call under the budget and the concurrency limit: (response, "") or (None, why not)."""
-    model = run.model_of(agent)
+    model, effort, long_cache = run.call_settings(agent)
     res = run.budget.reserve(agent, llm.worst_case_cost(config.prices(model), est + 2000, run.cfg.max_tokens))
     if isinstance(res, str):
         run.db.event(agent, "stopped", {"reason": res})
@@ -209,7 +209,7 @@ async def _call(run: Run, agent: str, messages: list[dict], est: int) -> tuple[l
         return None, res
     try:
         async with run.semaphore:
-            resp = await run.llm.sample(run.system, messages, run.cfg.max_tokens, model)
+            resp = await run.llm.sample(run.system, messages, run.cfg.max_tokens, model, effort, long_cache)
     except asyncio.CancelledError:
         run.budget.release(res)
         raise
@@ -240,14 +240,14 @@ async def _compact(run: Run, agent: str, messages: list[dict], est: int):
         run.db.event(agent, "stopped", {"reason": "context", "estimate": est})
         return None, est
     for attempt in range(2):
-        model = run.model_of(agent)
+        model, effort, long_cache = run.call_settings(agent)
         res = run.budget.reserve(agent, llm.worst_case_cost(config.prices(model), est, run.cfg.max_tokens))
         if isinstance(res, str):
             run.db.event(agent, "stopped", {"reason": res})
             return None, est
         try:
             async with run.semaphore:
-                resp = await run.llm.compact(run.system, messages, run.cfg.max_tokens, model)
+                resp = await run.llm.compact(run.system, messages, run.cfg.max_tokens, model, effort, long_cache)
         except asyncio.CancelledError:
             run.budget.release(res)
             raise

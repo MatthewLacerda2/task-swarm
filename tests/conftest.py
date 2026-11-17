@@ -49,6 +49,7 @@ class FakeLLM:
         self.compactions = 0
         self.big: set[str] = set()
         self.models: dict[str, str | None] = {}
+        self.settings: dict[str, tuple] = {}
 
     @staticmethod
     def who(messages: list[dict]) -> str:
@@ -58,10 +59,11 @@ class FakeLLM:
                     return mm.group(1)
         raise AssertionError("an agent was called without being told who it is")
 
-    async def sample(self, system, messages, max_tokens, model=None):
+    async def sample(self, system, messages, max_tokens, model, effort=None, long_cache=True):
         agent = self.who(messages)
         self.calls.append(agent)
         self.models[agent] = model
+        self.settings[agent] = (effort, long_cache)
         self.seen.setdefault(agent, []).append(texts_of(messages[-1]))
         script = self.scripts.get(agent)
         if script is None and ".review" in agent:
@@ -81,7 +83,7 @@ class FakeLLM:
             content, stop = [thinking, *step], "tool_use"
         return llm.LLMResponse(content, stop, llm.usage_from_dict(usage, config.prices(model)), usage)
 
-    async def compact(self, system, messages, max_tokens, model=None):
+    async def compact(self, system, messages, max_tokens, model, effort=None, long_cache=True):
         self.compactions += 1
         agent = self.who(messages)
         self.big.discard(agent)

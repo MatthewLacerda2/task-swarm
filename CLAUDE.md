@@ -37,6 +37,12 @@ what it does and how to run it.
 - **Whoever holds a task decides how to do it.** Prompts and briefs hand out a result
   to reach and how it is checked, never the steps. An agent goes back to whoever gave
   it the task only for something it can't do without, or to say a premise is false.
+- **One task has one owner, and only the owner changes what the task is.** A worker
+  may contest a premise, never override it. The owner's answer is stored on the task
+  (`tasks.decisions`) and shown to the reviewer; a new way to change a running task
+  goes through the owner and is recorded the same way.
+- **No one hands work to a stronger model than its own** (worker <= lead <= planner,
+  `RunConfig.problems`). The user picks the models before the run; agents don't.
 - **Splitting is bounded by checks, not by trust**: depth (`max_depth`), width
   (`max_subtasks`, never one piece), money (a sub-team spends its parent task's
   budget) and scope (only the lead sets the goal and the store's structure). A new

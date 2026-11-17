@@ -9,9 +9,22 @@ from . import config
 from .run import Run
 
 
+def _call_cost(model: str, cached: int, fresh: int, output: int) -> str:
+    p = config.prices(model)
+    return f"{(cached * p.cache_read + fresh * p.input + output * p.output) / 1e6:.2g}"
+
+
 def system_prompt(cfg: config.RunConfig) -> str:
     template = (config.PROMPTS / "system.md").read_text()
-    return template.format(**(cfg.to_dict() | {"hard_stop": cfg.hard_stop}))
+    values = cfg.to_dict() | {
+        "hard_stop": cfg.hard_stop,
+        # a short early call and a long late one, on the workers' model
+        "call_low": _call_cost(cfg.worker_model, 5_000, 1_000, 400),
+        "call_high": _call_cost(cfg.worker_model, 40_000, 4_000, 2_000),
+        "lan_line": "The local network is not reachable." if cfg.block_lan else "",
+        "data_line": "the user's own files are in /task/data (read-only), and " if cfg.data_dir else "",
+    }
+    return template.format(**values)
 
 
 def identity(agent: str, role: str) -> str:
@@ -91,6 +104,8 @@ def reviewer_first(run: Run, reviewer: str, task) -> str:
         f"# The task under review: `{task['id']}`, {task['title']}\n\n{task['brief']}",
         f"# What to check\n\n{task['verify']}",
         f"# The worker's report\n\n{report}",
+        *(["# Decisions by the task's owner since the brief\n\n" +
+           "\n".join(f"- {d}" for d in json.loads(task["decisions"]))] if task["decisions"] else []),
         f"The worker's files are in /task/work/{task['id']}/. The records it stored have "
         f"\"_task\": \"{task['id']}\". This is review {task['attempts']} of at most {run.cfg.max_attempts}.",
         _store(run),
@@ -98,7 +113,7 @@ def reviewer_first(run: Run, reviewer: str, task) -> str:
     pieces = run.db.children(task["id"])
     if pieces:
         lines = [f"- `{t['id']}` ({t['status']}): {t['title']}" for t in pieces]
-        parts.insert(5, "# Sub-tasks\n\nThe worker split this task. Each piece that is done was reviewed by itself; "
+        parts.insert(-2, "# Sub-tasks\n\nThe worker split this task. Each piece that is done was reviewed by itself; "
                         "you check the whole, including what the pieces don't cover and how they were put "
                         "together. Their files are in /task/work/<id>/.\n" + "\n".join(lines))
     return "\n\n".join(parts)

@@ -37,7 +37,7 @@ def run_cfg(tmp_path, monkeypatch):
 
 @pytest.fixture
 async def sb_lan_blocked(run_cfg):
-    run_cfg.block_lan = True
+    assert run_cfg.block_lan            # the default
     box = sandbox.Sandbox(sandbox.agent_spec(run_cfg, "agent-001"))
     await box.start()
     yield box
@@ -74,6 +74,22 @@ async def test_shell_state_persists(sb):
 async def test_others_folders_are_readable(sb):
     res = await sh(sb, "cat /task/work/agent-002/secret.txt; cat /task/store/companies.jsonl")
     assert res.exit_code == 0 and "other agent" in res.output and "{}" in res.output
+
+
+async def test_users_data_folder_is_read_only(run_cfg, tmp_path):
+    data = tmp_path / "mine"
+    data.mkdir()
+    (data / "big.csv").write_text("a,b\n1,2\n")
+    run_cfg.data_dir = str(data)
+    box = sandbox.Sandbox(sandbox.agent_spec(run_cfg, "agent-001"))
+    await box.start()
+    try:
+        assert (await sh(box, "cat /task/data/big.csv")).output == "a,b\n1,2\n"
+        assert (await sh(box, "echo x >> /task/data/big.csv")).exit_code != 0
+        assert (await sh(box, "rm /task/data/big.csv; touch /task/data/new")).exit_code != 0
+        assert (data / "big.csv").read_text() == "a,b\n1,2\n"
+    finally:
+        await box.close()
 
 
 async def test_only_the_shared_folders_are_there(sb):
@@ -236,7 +252,17 @@ def _default_gateway() -> str | None:
     return parts[2] if len(parts) > 2 else None
 
 
-async def test_lan_reachable_by_default(sb):
+@pytest.fixture
+async def sb_lan_open(run_cfg):
+    run_cfg.block_lan = False
+    box = sandbox.Sandbox(sandbox.agent_spec(run_cfg, "agent-001"))
+    await box.start()
+    yield box
+    await box.close()
+
+
+async def test_lan_reachable_only_when_the_block_is_off(sb_lan_open):
+    sb = sb_lan_open
     gw = _default_gateway()
     if not gw:
         pytest.skip("no default gateway")

@@ -63,11 +63,15 @@ async def _plan(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
         ok, text = plan.apply(run, inp, owner=agent)
         if ok:
             text += ("\nYou own these sub-tasks: their reports come to you, not to the lead. End your turn to wait "
-                     "for them. Your own report still has to cover the whole task.")
+                     "for them: you are woken the moment one settles, and waiting inside a command (`sleep`) only "
+                     "delays you. Your own report still has to cover the whole task.")
         return text, not ok, None
     ok, text = plan.apply(run, inp)
     if ok and row["role"] == "planner":
         return text + "\nThe lead takes it from here.", False, Outcome("planned")
+    if ok:
+        text += ("\nEnd your turn to wait: you are woken the moment a task settles. Waiting inside a command "
+                 "(`sleep`) only delays you.")
     return text, not ok, None
 
 
@@ -89,6 +93,14 @@ async def _send_message(run: Run, agent: str, row, closed: bool, inp: dict) -> R
         return f"There is no agent `{to}`. Agents so far: {names}.", True, None
     run.send(to, agent, body.strip())
     run.db.event(agent, "message", {"to": to, "chars": len(body)})
+    # Only a task's owner can change what the task is. What the owner tells its worker is
+    # kept on the task, so the reviewer checks the work against the brief as it now stands.
+    task = run.db.task(to)
+    if task is not None and task["status"] in OPEN and (task["parent"] or "lead") == agent:
+        decisions = json.loads(task["decisions"] or "[]") + [body.strip()]
+        run.db.update_task(to, decisions=json.dumps(decisions, ensure_ascii=False))
+        return (f"Sent to `{to}`. You own that task, so this is recorded on it as your decision and its reviewer "
+                "will see it."), False, None
     return f"Sent to `{to}`.", False, None
 
 

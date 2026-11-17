@@ -51,12 +51,21 @@ def cmd_run(args) -> int:
     cfg = config.RunConfig(run_id=run_id)
     if (cfg.run_dir / "run.db").exists():
         raise SystemExit(f"run {run_id} already exists; continue it with `task-swarm resume {run_id}`")
+    for role, name in (("plan_model", args.planner), ("lead_model", args.lead), ("worker_model", args.worker)):
+        if name is not None:
+            setattr(cfg, role, config.resolve_model(name))
+    if args.data:
+        cfg.data_dir = str(Path(args.data).resolve())
     if args.budget is not None:
+        cfg.scale_caps(max(1.0, args.budget / cfg.run_budget))     # the caps grow with the budget
         cfg.run_budget = args.budget
     _apply(cfg, args.set)
-    client = llm.AnthropicLLM(config.read_api_key(), cfg)
-    run = runmod.open_run(cfg, client, task)
-    print(f"run {run_id} in {cfg.run_dir} (budget US$ {cfg.run_budget:.2f}, hard stop US$ {cfg.hard_stop:.2f})")
+    run = runmod.open_run(cfg, llm.AnthropicLLM(config.read_api_key()), task)
+    print(f"run {run_id} in {cfg.run_dir}")
+    planner = cfg.plan_model if cfg.planner_fits() else "none (the lead plans)"
+    print(f"  planner {planner}, lead {cfg.lead_model}, workers {cfg.worker_model}", flush=True)
+    print(f"  budget US$ {cfg.run_budget:.2f} (hard stop {cfg.hard_stop:.2f}); caps: lead {cfg.lead_budget:.2f}, "
+          f"each worker or reviewer {cfg.agent_budget:.2f}, each task with its sub-team {cfg.task_budget:.2f}")
     return _execute(run)
 
 
@@ -70,11 +79,14 @@ def cmd_resume(args) -> int:
     cfg = probe.cfg
     if args.budget is not None or args.set:
         if args.budget is not None:
+            cfg.scale_caps(max(1.0, args.budget / cfg.run_budget))
             cfg.run_budget = args.budget
         _apply(cfg, args.set)
+        if problems := cfg.problems():
+            raise SystemExit("This run can't continue:\n" + "\n".join(f"- {p}" for p in problems))
         probe.db.set_meta("config", cfg.to_dict())
     probe.db.conn.close()
-    run = runmod.open_run(cfg, llm.AnthropicLLM(config.read_api_key(), cfg))
+    run = runmod.open_run(cfg, llm.AnthropicLLM(config.read_api_key()))
     return _execute(run)
 
 
@@ -116,7 +128,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("task", nargs="*", help="the task, as text")
     p.add_argument("--file", help="read the task from a file")
     p.add_argument("--id", help="name of the run (default: date and time)")
-    p.add_argument("--budget", type=float, help="run budget in US$ (default 2.00)")
+    p.add_argument("--budget", type=float, help="run budget in US$ (default 2.00); the per-agent caps grow with it")
+    models = "haiku, sonnet, opus, fable or a full model id"
+    p.add_argument("--planner", metavar="MODEL", help=f"who drafts the plan: {models}, or none (default opus)")
+    p.add_argument("--lead", metavar="MODEL", help=f"who owns the plan and writes the deliverable: {models} "
+                                                   "(default haiku)")
+    p.add_argument("--worker", metavar="MODEL", help=f"who does and reviews the tasks: {models} (default haiku). "
+                                                     "No one hands work to a stronger model than its own")
+    p.add_argument("--data", metavar="DIR", help="a folder of yours every agent can read at /task/data")
     p.add_argument("--set", nargs="*", metavar="KEY=VALUE", help="override a RunConfig value, e.g. max_parallel=2")
     p.set_defaults(func=cmd_run)
 

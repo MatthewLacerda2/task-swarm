@@ -190,10 +190,10 @@ class LLMResponse:
 
 
 class LLM(Protocol):
-    async def sample(self, system: list[dict], messages: list[dict], max_tokens: int,
-                     model: str | None = None) -> LLMResponse: ...
-    async def compact(self, system: list[dict], messages: list[dict], max_tokens: int,
-                      model: str | None = None) -> LLMResponse: ...
+    async def sample(self, system: list[dict], messages: list[dict], max_tokens: int, model: str,
+                     effort: str = "medium", long_cache: bool = True) -> LLMResponse: ...
+    async def compact(self, system: list[dict], messages: list[dict], max_tokens: int, model: str,
+                      effort: str = "medium", long_cache: bool = True) -> LLMResponse: ...
 
 
 def system_blocks(text: str) -> list[dict]:
@@ -201,20 +201,14 @@ def system_blocks(text: str) -> list[dict]:
 
 
 class AnthropicLLM:
-    def __init__(self, api_key: str, cfg: config.RunConfig, max_retries: int = 8):
+    def __init__(self, api_key: str, max_retries: int = 8):
         import anthropic
 
-        self.model = cfg.model
-        # The team's model keeps its cache for an hour: agents come and go over a run.
-        # The planner makes a few calls in a row and is gone, so five minutes is enough.
-        self.settings = {cfg.model: ("medium", CACHE_1H)}
-        if cfg.plan_model and cfg.plan_model != cfg.model:
-            self.settings[cfg.plan_model] = (cfg.plan_effort, CACHE_5M)
         self.client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=max_retries, timeout=600)
 
-    async def _stream(self, model: str | None, system: list[dict], **kwargs: Any) -> LLMResponse:
-        model = model or self.model
-        effort, cache = self.settings[model]
+    async def _stream(self, model: str, effort: str, long_cache: bool, system: list[dict],
+                      **kwargs: Any) -> LLMResponse:
+        cache = CACHE_1H if long_cache else CACHE_5M
         t0 = time.monotonic()
         async with self.client.beta.messages.stream(
             model=model,
@@ -236,15 +230,15 @@ class AnthropicLLM:
             latency=time.monotonic() - t0,
         )
 
-    async def sample(self, system: list[dict], messages: list[dict], max_tokens: int,
-                     model: str | None = None) -> LLMResponse:
-        return await self._stream(model, system, messages=messages, max_tokens=max_tokens)
+    async def sample(self, system: list[dict], messages: list[dict], max_tokens: int, model: str,
+                     effort: str = "medium", long_cache: bool = True) -> LLMResponse:
+        return await self._stream(model, effort, long_cache, system, messages=messages, max_tokens=max_tokens)
 
-    async def compact(self, system: list[dict], messages: list[dict], max_tokens: int,
-                      model: str | None = None) -> LLMResponse:
+    async def compact(self, system: list[dict], messages: list[dict], max_tokens: int, model: str,
+                      effort: str = "medium", long_cache: bool = True) -> LLMResponse:
         # The summarizer reads the history from the agent's cache, which costs about a
         # fifth of sending it uncached.
-        return await self._stream(model, system, messages=messages, max_tokens=max_tokens,
+        return await self._stream(model, effort, long_cache, system, messages=messages, max_tokens=max_tokens,
                                   compaction={"type": "summarize"})
 
 

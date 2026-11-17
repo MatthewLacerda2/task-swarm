@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from . import config, llm, plan, prompts
+from . import config, plan, prompts
 from .agent import run_agent
 from .db import OPEN
 from .handlers import Outcome
@@ -124,10 +124,10 @@ class Orchestrator:
     def _use_planner(self) -> bool:
         """The planner runs when one is set and one of its calls, at worst, fits the budget."""
         cfg = self.run.cfg
-        if self.db.get_meta("planner_done") or not cfg.plan_model or cfg.plan_model == cfg.model:
-            return False
-        worst = llm.worst_case_cost(config.prices(cfg.plan_model), 8_000, cfg.max_tokens)
-        if worst > cfg.run_budget / 3 or worst > cfg.planner_budget:
+        if self.db.get_meta("planner_done") or not cfg.plan_model or cfg.plan_model == cfg.lead_model:
+            return False                  # no planner, or the lead is the same model and plans itself
+        worst = config.worst_call(cfg.plan_model, cfg.max_tokens)
+        if not cfg.planner_fits():
             log.info("no planner: one %s call can cost up to US$ %.2f, too much for this budget; the lead plans",
                      cfg.plan_model, worst)
             self.db.event(None, "planner_skipped", {"worst_call": worst})

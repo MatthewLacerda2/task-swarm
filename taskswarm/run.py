@@ -34,8 +34,19 @@ class Run:
             self.mail.setdefault(to, asyncio.Event()).set()
             self.wake.set()
 
-    def model_of(self, agent: str) -> str:
-        return self.cfg.plan_model if agent == "planner" else self.cfg.model
+    def call_settings(self, agent: str) -> tuple[str, str, bool]:
+        """(model, effort, keep the cache for an hour) for an agent's calls.
+
+        A reviewer runs on the model of whoever's work it checks: a task's reviewer on
+        the workers' model, the final reviewer on the lead's. The planner makes a few
+        calls in a row and is gone, so a five-minute cache is enough for it.
+        """
+        cfg = self.cfg
+        if agent == "planner":
+            return cfg.plan_model, cfg.plan_effort, False
+        if agent == "lead" or agent.startswith("final."):
+            return cfg.lead_model, cfg.effort, True
+        return cfg.worker_model, cfg.effort, True
 
 
 def open_run(cfg: config.RunConfig, client: llm.LLM, task: str | None = None) -> Run:
@@ -49,11 +60,15 @@ def open_run(cfg: config.RunConfig, client: llm.LLM, task: str | None = None) ->
     if stored is None:
         if task is None:
             raise SystemExit(f"no run {cfg.run_id}")
+        if problems := cfg.problems():
+            db.conn.close()
+            delete_run(cfg)
+            raise SystemExit("This run can't start:\n" + "\n".join(f"- {p}" for p in problems))
         db.set_meta("config", cfg.to_dict())
         db.set_meta("task", task)
         db.set_meta("status", "new")
     else:
-        cfg = config.RunConfig(**stored)
+        cfg = config.RunConfig.from_dict(stored)
     return Run(
         cfg=cfg, db=db, budget=llm.Budget(db, cfg), llm=client,
         system=llm.system_blocks(prompts.system_prompt(cfg)),

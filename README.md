@@ -20,10 +20,17 @@ task ──> planner ──plan──> lead ──> tasks (a dependency graph) �
 ```
 
 - **A stronger model drafts the plan.** A good plan lifts every worker under it, so
-  the first draft is written by Claude Opus 5.5 (`plan_model`) in one or two calls;
+  by default the first draft is written by Claude Opus 5.5 in one or two calls, and
   the lead and the rest of the team run on Claude Haiku 5.5. The planner is skipped
   when the budget is too small for it (under about US$ 1.10), or with
-  `--set plan_model=`; then the lead plans.
+  `--planner none`; then the lead plans.
+- **You choose who runs on what, before the run:** `--planner`, `--lead` and
+  `--worker` take `haiku`, `sonnet`, `opus` or `fable`. Price it by how much the task
+  matters and how hard it is. One rule is enforced: no one hands work to a stronger
+  model than its own, so worker <= lead <= planner; a run that breaks it doesn't
+  start. A reviewer runs on the model of whoever's work it checks. The per-agent caps
+  grow with `--budget`, and a run whose caps can't cover its models is refused with
+  the numbers to set.
 - **The lead owns the plan and puts the result together; it doesn't do the pieces.**
   The plan sets the goal, how the finished work will be checked (`done_when`), the
   structure of the store, and the tasks. Each task has a brief that stands alone and
@@ -32,6 +39,11 @@ task ──> planner ──plan──> lead ──> tasks (a dependency graph) �
   not steps to follow. A worker goes back to whoever gave it the task for two things
   only: something it can't do the task without, or a premise in its brief that turned
   out to be false.
+- **A worker may contest a premise, never override it.** One task has one owner (the
+  lead for its tasks, a worker for the sub-tasks it made), and only the owner changes
+  what the task is. The owner's answer is recorded on the task as a decision, and the
+  reviewer checks the work against the brief plus those decisions: work that departs
+  from the brief on the worker's own judgment doesn't pass.
 - **A worker may split its own task into sub-tasks**, which it then owns: their
   reports come to it, and it still hands in the whole task. What keeps that from
   running away: a sub-task can't be split again; a task splits into two to six
@@ -97,6 +109,7 @@ chmod 600 ~/.config/task-swarm/anthropic.key
 uv run pytest                                  # sandbox escape tests and the rest
 
 uv run task-swarm run --budget 0.60 "Market survey of open-source vector databases: ..."
+uv run task-swarm run --budget 5 --lead sonnet --worker haiku --data ~/datasets "..."
 uv run task-swarm status <run>
 uv run task-swarm transcript <run> lead        # or a task id, <task>.review1, final.review1
 uv run task-swarm resume <run> --budget 2      # after an interruption, or to add money
@@ -151,9 +164,12 @@ checking and parallel work.
 - **Built for research, not for writing code together.** There is no shared
   repository with merges, as swarm had.
 - **Models:** `taskswarm/config.py` has prices for Claude Haiku 5.5, Sonnet 5.5,
-  Opus 5.5 and Fable 5.2. The team has only been run on Haiku 5.5 and the planner
-  only on Opus 5.5. Fable 5.2 as planner needs `planner_budget=0.80` and a run
-  budget of about US$ 2.20 or more.
+  Opus 5.5 and Fable 5.2. Run for real so far: Haiku workers, a Haiku or Sonnet lead,
+  an Opus planner. Opus or Fable as lead or worker, and Fable as planner (which
+  needs a run budget of about US$ 2.20 or more), are covered by scripted tests only.
+- **Waiting is advice, not a check.** A lead is told to end its turn to wait; in one
+  run a Sonnet lead slept two minutes inside a command instead. Nothing broke, but
+  the run took longer.
 
 ## Safety
 
@@ -161,8 +177,10 @@ Agents get real internet access and run real commands on your machine, inside th
 sandbox. Run the escape tests before the first run. What agents do on the internet
 leaves from your IP. Web pages can contain text written to mislead an agent: the
 sandbox keeps the damage inside the run's folder, and reviewers re-check sources, but
-treat a deliverable as checked work, not as proof. Agents can reach your local
-network unless you set `block_lan=true`.
+treat a deliverable as checked work, not as proof. Agents can't reach your local
+network (`block_lan`, on by default; `--set block_lan=false` turns it off). A folder
+you pass with `--data` is mounted read-only for every agent at `/task/data`, so a
+large download you already have happens once.
 
 ## License
 

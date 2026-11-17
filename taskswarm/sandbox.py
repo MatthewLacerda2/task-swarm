@@ -6,10 +6,10 @@ empty or private mounts, so the user's personal files and every credential in th
 home directory are invisible.
 
 Network: pasta gives the sandbox its own network namespace. Loopback inside it only
-reaches the host port forwarded with -T (SearXNG). The local network is reachable
-unless block_lan is set: then an nftables table loaded inside that namespace before
-bwrap starts rejects private and link-local destinations (LAN, VPN peers, Docker
-bridges, the host's own addresses), except the DNS servers in /etc/resolv.conf.
+reaches the host port forwarded with -T (SearXNG). With block_lan (the default), an
+nftables table loaded inside that namespace before bwrap starts rejects private and
+link-local destinations (LAN, VPN peers, Docker bridges, the host's own addresses),
+except the DNS servers in /etc/resolv.conf.
 
 Commands run in one persistent bash. The orchestrator never reads or writes paths
 inside agent folders while handling output; output comes back through the pipe.
@@ -392,6 +392,8 @@ def agent_spec(cfg: config.RunConfig, agent_id: str) -> SandboxSpec:
     ]
     if config.UV_BINARY.exists():
         binds.append(Bind(config.UV_BINARY, f"{ROOT}/tools/uv"))
+    if cfg.data_dir:
+        binds.append(Bind(Path(cfg.data_dir), f"{ROOT}/data"))
     return SandboxSpec(
         name=agent_id,
         home_inside=f"{ROOT}/work/{agent_id}",

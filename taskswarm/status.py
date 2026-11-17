@@ -24,7 +24,7 @@ def _meta(db: sqlite3.Connection, key: str, default=None):
 
 def render(run_id: str) -> str:
     db = _open(run_id)
-    cfg = config.RunConfig(**_meta(db, "config"))
+    cfg = config.RunConfig.from_dict(_meta(db, "config"))
     spent = db.execute("SELECT COALESCE(SUM(cost), 0) FROM usage").fetchone()[0]
     out = [f"Run {run_id}: {_meta(db, 'status')}" + (f" ({r})" if (r := _meta(db, "status_reason")) else "")]
     out.append(f"Folder: {cfg.run_dir}")
