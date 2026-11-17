@@ -6,51 +6,10 @@ from __future__ import annotations
 import json
 import os
 
-from conftest import COLLECTIONS, FakeLLM, bash, call, record, task, texts_of
+from conftest import (COLLECTIONS, DELIVER, GOAL, FakeLLM, bash, call, lead_script, record, stored, task,
+                      texts_of, tool_calls, worker)
 from taskswarm import config, orchestrator
 from taskswarm import run as runmod
-
-GOAL = {"goal": "A list of the companies that make the thing.", "done_when": "Every company has a source that names it."}
-
-
-def tool_calls(messages) -> list[dict]:
-    return [b for m in messages if m["role"] == "assistant" for b in m["content"] if b.get("type") == "tool_use"]
-
-
-DELIVER = "printf 'Acme makes it.\\n' > answer.md"
-
-
-def lead_script(plan_input: dict, deliver: str = DELIVER, react=None):
-    """A lead that plans, waits, and delivers when told nothing is left. `react(text)` may answer other updates."""
-
-    def step(messages):
-        last = texts_of(messages[-1])
-        said = tool_calls(messages)
-        if not said:
-            return [call("plan", **plan_input)]
-        if react and (out := react(last)):
-            return out
-        answered = {b.get("tool_use_id") for b in messages[-1]["content"]}
-        if said[-1]["name"] == "bash" and said[-1]["input"]["command"] == deliver and said[-1]["id"] in answered:
-            return [call("finish", path="answer.md", summary="One maker found.")]
-        if any(x in last for x in ("No task is running", "final reviewer did not pass", "is used up")):
-            return [bash(deliver)]
-        return "Waiting."
-
-    return step
-
-
-def worker(*records_, summary="Stored the makers I found."):
-    steps = []
-    if records_:
-        steps.append([call("store_write", collection="companies", records=list(records_))])
-    steps.append([call("report", summary=summary, how="Searched and read each site.")])
-    return steps
-
-
-def stored(run, name="companies") -> list[dict]:
-    return [json.loads(l) for l in (run.cfg.run_dir / "store" / f"{name}.jsonl").read_text().splitlines()]
-
 
 async def test_plan_to_deliverable(make_run):
     plan_input = GOAL | {"collections": COLLECTIONS, "tasks": [task("find"), task("check", ["find"])]}
@@ -139,7 +98,7 @@ async def test_roles_are_enforced(make_run):
     })
     assert await orchestrator.execute(run) == "done"
     seen = "\n".join(fake.seen["find"])
-    assert "`plan` is not for your role (worker). It is for the lead." in seen
+    assert "only the lead sets the goal" in seen
     assert "`verdict` is not for your role" in seen and "`finish` is not for your role" in seen
     assert "`report` is not for your role (reviewer)" in "\n".join(fake.seen["find.review1"])
     assert run.db.get_meta("goal") == GOAL["goal"]

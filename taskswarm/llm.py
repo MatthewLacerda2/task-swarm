@@ -26,6 +26,7 @@ from .tools import TOOLS
 
 BETAS = ["compact-2026-09-04"]
 CACHE_1H = {"type": "ephemeral", "ttl": "1h"}
+CACHE_5M = {"type": "ephemeral"}
 
 
 # --- cost ------------------------------------------------------------------------------
@@ -127,10 +128,21 @@ class Budget:
         return self.spent >= self.cfg.run_budget
 
     def agent_limit(self, agent: str) -> float:
-        return self.cfg.lead_budget if agent == "lead" else self.cfg.agent_budget
+        return {"lead": self.cfg.lead_budget, "planner": self.cfg.planner_budget}.get(agent, self.cfg.agent_budget)
 
     def agent_left(self, agent: str) -> float:
         return self.agent_limit(agent) - self.agent_spent.get(agent, 0.0)
+
+    def tree_left(self, agent: str) -> float:
+        """What is left of the budget of the top-level task this agent works under.
+
+        A sub-team spends its parent task's money: splitting a task buys parallel
+        work and fresh memories, never more budget.
+        """
+        row = self.db.agent(agent)
+        if row is None or not row["task"]:
+            return math.inf
+        return self.cfg.task_budget - self.db.tree_spent(row["task"].split(".")[0])
 
     def reserve(self, agent: str, amount: float) -> Reservation | str:
         """A reservation, or the reason the call can't be made."""
@@ -138,6 +150,8 @@ class Budget:
             return "hard_stop"
         if self.agent_left(agent) <= 0:
             return "agent_budget"
+        if self.tree_left(agent) <= 0:
+            return "task_budget"
         if self.spent + self.reserved + amount > self.hard_stop:
             self.hard_stopped = True
             self.db.event(agent, "hard_stop", {"spent": self.spent, "reserved": self.reserved})
@@ -176,8 +190,10 @@ class LLMResponse:
 
 
 class LLM(Protocol):
-    async def sample(self, system: list[dict], messages: list[dict], max_tokens: int) -> LLMResponse: ...
-    async def compact(self, system: list[dict], messages: list[dict], max_tokens: int) -> LLMResponse: ...
+    async def sample(self, system: list[dict], messages: list[dict], max_tokens: int,
+                     model: str | None = None) -> LLMResponse: ...
+    async def compact(self, system: list[dict], messages: list[dict], max_tokens: int,
+                      model: str | None = None) -> LLMResponse: ...
 
 
 def system_blocks(text: str) -> list[dict]:
@@ -189,17 +205,25 @@ class AnthropicLLM:
         import anthropic
 
         self.model = cfg.model
-        self.prices = cfg.prices
+        # The team's model keeps its cache for an hour: agents come and go over a run.
+        # The planner makes a few calls in a row and is gone, so five minutes is enough.
+        self.settings = {cfg.model: ("medium", CACHE_1H)}
+        if cfg.plan_model and cfg.plan_model != cfg.model:
+            self.settings[cfg.plan_model] = (cfg.plan_effort, CACHE_5M)
         self.client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=max_retries, timeout=600)
 
-    async def _stream(self, **kwargs: Any) -> LLMResponse:
+    async def _stream(self, model: str | None, system: list[dict], **kwargs: Any) -> LLMResponse:
+        model = model or self.model
+        effort, cache = self.settings[model]
         t0 = time.monotonic()
         async with self.client.beta.messages.stream(
-            model=self.model,
+            model=model,
             tools=TOOLS,
+            system=[b | {"cache_control": cache} for b in system],
             thinking={"type": "adaptive", "display": "summarized"},
-            output_config={"effort": "medium"},
+            output_config={"effort": effort},
             betas=BETAS,
+            cache_control=cache,
             **kwargs,
         ) as stream:
             msg = await stream.get_final_message()
@@ -207,23 +231,21 @@ class AnthropicLLM:
         return LLMResponse(
             content=[b.to_dict() for b in msg.content],
             stop_reason=msg.stop_reason,
-            usage=usage_from_dict(raw_usage, self.prices),
+            usage=usage_from_dict(raw_usage, config.prices(model)),
             raw_usage=raw_usage,
             latency=time.monotonic() - t0,
         )
 
-    async def sample(self, system: list[dict], messages: list[dict], max_tokens: int) -> LLMResponse:
-        return await self._stream(
-            system=system, messages=messages, max_tokens=max_tokens, cache_control=CACHE_1H,
-        )
+    async def sample(self, system: list[dict], messages: list[dict], max_tokens: int,
+                     model: str | None = None) -> LLMResponse:
+        return await self._stream(model, system, messages=messages, max_tokens=max_tokens)
 
-    async def compact(self, system: list[dict], messages: list[dict], max_tokens: int) -> LLMResponse:
-        # cache_control lets the summarizer read the history from the agent's cache,
-        # which costs about a fifth of sending it uncached.
-        return await self._stream(
-            system=system, messages=messages, max_tokens=max_tokens, compaction={"type": "summarize"},
-            cache_control=CACHE_1H,
-        )
+    async def compact(self, system: list[dict], messages: list[dict], max_tokens: int,
+                      model: str | None = None) -> LLMResponse:
+        # The summarizer reads the history from the agent's cache, which costs about a
+        # fifth of sending it uncached.
+        return await self._stream(model, system, messages=messages, max_tokens=max_tokens,
+                                  compaction={"type": "summarize"})
 
 
 def estimate_tokens(text: str) -> int:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import re
 
 import pytest
@@ -47,6 +48,7 @@ class FakeLLM:
         self.seen: dict[str, list[str]] = {}
         self.compactions = 0
         self.big: set[str] = set()
+        self.models: dict[str, str | None] = {}
 
     @staticmethod
     def who(messages: list[dict]) -> str:
@@ -56,9 +58,10 @@ class FakeLLM:
                     return mm.group(1)
         raise AssertionError("an agent was called without being told who it is")
 
-    async def sample(self, system, messages, max_tokens):
+    async def sample(self, system, messages, max_tokens, model=None):
         agent = self.who(messages)
         self.calls.append(agent)
+        self.models[agent] = model
         self.seen.setdefault(agent, []).append(texts_of(messages[-1]))
         script = self.scripts.get(agent)
         if script is None and ".review" in agent:
@@ -76,9 +79,9 @@ class FakeLLM:
             content, stop = [thinking, {"type": "text", "text": step}], "end_turn"
         else:
             content, stop = [thinking, *step], "tool_use"
-        return llm.LLMResponse(content, stop, llm.usage_from_dict(usage, PRICES), usage)
+        return llm.LLMResponse(content, stop, llm.usage_from_dict(usage, config.prices(model)), usage)
 
-    async def compact(self, system, messages, max_tokens):
+    async def compact(self, system, messages, max_tokens, model=None):
         self.compactions += 1
         agent = self.who(messages)
         self.big.discard(agent)
@@ -97,6 +100,7 @@ def make_run(tmp_path, monkeypatch):
 
     def make(scripts: dict, task: str = "Find things.", output_tokens: int = 200, run_id: str = "t", **cfg):
         fake = FakeLLM(scripts, output_tokens)
+        cfg.setdefault("plan_model", "")       # the lead plans, unless a test asks for the planner
         run = runmod.open_run(config.RunConfig(run_id=run_id, **cfg), fake, task)
         made.append(run)
         return run, fake
@@ -129,6 +133,52 @@ def task(tid: str, blocked_by: list[str] | None = None, **over) -> dict:
 
 def record(name: str, **over) -> dict:
     return {"name": name, "source": "https://example.com/" + name, "retrieved": "2026-11-01"} | over
+
+
+GOAL = {"goal": "A list of the companies that make the thing.", "done_when": "Every company has a source that names it."}
+
+
+def tool_calls(messages) -> list[dict]:
+    return [b for m in messages if m["role"] == "assistant" for b in m["content"] if b.get("type") == "tool_use"]
+
+
+DELIVER = "printf 'Acme makes it.\\n' > answer.md"
+
+
+def lead_script(plan_input: dict | None, deliver: str = DELIVER, react=None):
+    """A lead that plans, waits, and delivers when told nothing is left. `react(text)` may answer other updates.
+
+    With no plan_input it never plans: the plan came from the planner.
+    """
+
+    def step(messages):
+        last = texts_of(messages[-1])
+        said = tool_calls(messages)
+        if not said and plan_input is not None:
+            return [call("plan", **plan_input)]
+        if react and (out := react(last)):
+            return out
+        answered = {b.get("tool_use_id") for b in messages[-1]["content"]}
+        if said and said[-1]["name"] == "bash" and said[-1]["input"]["command"] == deliver \
+                and said[-1]["id"] in answered:
+            return [call("finish", path="answer.md", summary="One maker found.")]
+        if any(x in last for x in ("No task is running", "final reviewer did not pass", "is used up")):
+            return [bash(deliver)]
+        return "Waiting."
+
+    return step
+
+
+def worker(*records_, summary="Stored the makers I found."):
+    steps = []
+    if records_:
+        steps.append([call("store_write", collection="companies", records=list(records_))])
+    steps.append([call("report", summary=summary, how="Searched and read each site.")])
+    return steps
+
+
+def stored(run, name="companies") -> list[dict]:
+    return [json.loads(l) for l in (run.cfg.run_dir / "store" / f"{name}.jsonl").read_text().splitlines()]
 
 
 def dump(fake, agent):   # for debugging a failing test

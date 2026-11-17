@@ -25,6 +25,17 @@ class Run:
     wake: asyncio.Event = field(default_factory=asyncio.Event)        # something changed: look again
     active: set[str] = field(default_factory=set)                     # agents inside a model/command loop now
     locks: dict[str, asyncio.Lock] = field(default_factory=dict)      # one conversation is never run twice at once
+    mail: dict[str, asyncio.Event] = field(default_factory=dict)      # set when a message for that agent arrives
+
+    def send(self, to: str, sender: str, body: str, quiet: bool = False) -> None:
+        """Put a message in an agent's inbox. `quiet` waits for its next turn instead of waking it."""
+        self.db.send(to, sender, body, quiet)
+        if not quiet:
+            self.mail.setdefault(to, asyncio.Event()).set()
+            self.wake.set()
+
+    def model_of(self, agent: str) -> str:
+        return self.cfg.plan_model if agent == "planner" else self.cfg.model
 
 
 def open_run(cfg: config.RunConfig, client: llm.LLM, task: str | None = None) -> Run:

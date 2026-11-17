@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from . import plan, safeio, sandbox
+from .db import OPEN
 from .run import Run, work_dir
 from .tools import ALLOWED
 
@@ -22,9 +23,9 @@ DELIVERABLE_MAX = 50 * 1024 * 1024
 
 @dataclass
 class Outcome:
-    kind: str                      # report | verdict | finish | idle | failed
+    kind: str                      # planned | report | verdict | finish | idle | failed
     data: dict = field(default_factory=dict)
-    reason: str = ""               # for failed: hard_stop | agent_budget | context | api_error | calls | silent | sandbox
+    reason: str = ""               # for failed: hard_stop, agent_budget, task_budget, context, api_error, calls, ...
 
 
 Result = tuple[str, bool, Outcome | None]
@@ -56,7 +57,17 @@ async def handle(run: Run, agent: str, closed: bool, name: str, inp: object) -> 
 
 
 async def _plan(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
+    if row["role"] == "worker":
+        if closed or run.db.task(agent)["status"] != "running":
+            return "Your task is already handed in, so it can't be split now.", True, None
+        ok, text = plan.apply(run, inp, owner=agent)
+        if ok:
+            text += ("\nYou own these sub-tasks: their reports come to you, not to the lead. End your turn to wait "
+                     "for them. Your own report still has to cover the whole task.")
+        return text, not ok, None
     ok, text = plan.apply(run, inp)
+    if ok and row["role"] == "planner":
+        return text + "\nThe lead takes it from here.", False, Outcome("planned")
     return text, not ok, None
 
 
@@ -76,9 +87,8 @@ async def _send_message(run: Run, agent: str, row, closed: bool, inp: dict) -> R
                     "lead, put it in the task's brief with `plan`."), True, None
         names = ", ".join(f"`{a['id']}`" for a in run.db.agents())
         return f"There is no agent `{to}`. Agents so far: {names}.", True, None
-    run.db.send(to, agent, body.strip())
+    run.send(to, agent, body.strip())
     run.db.event(agent, "message", {"to": to, "chars": len(body)})
-    run.wake.set()
     return f"Sent to `{to}`.", False, None
 
 
@@ -138,6 +148,10 @@ async def _report(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
     if len(summary) > limit:
         return (f"The summary is {len(summary):,} characters; the limit is {limit:,}. Keep the result and what the "
                 "lead needs; put the detail in a file in your folder and name it."), True, None
+    still = [t["id"] for t in run.db.children(agent) if t["status"] in OPEN]
+    if still:
+        return (f"Your sub-tasks are still open: {', '.join(still)}. End your turn to wait for them, or cancel them "
+                "with `plan`. Your report covers the whole task, so it comes after them."), True, None
     how = inp.get("how") if isinstance(inp.get("how"), str) else ""
     return ("Handed in. A reviewer will check it; if it doesn't pass you will get the findings.", False,
             Outcome("report", {"summary": summary.strip(), "how": how.strip()[:limit]}))

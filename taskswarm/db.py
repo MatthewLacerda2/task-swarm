@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
-    role TEXT NOT NULL,                -- lead | worker | reviewer
+    role TEXT NOT NULL,                -- planner | lead | worker | reviewer
     task TEXT,                         -- the task it works on or reviews; NULL for the lead and final reviewers
     spent REAL NOT NULL DEFAULT 0,
     calls INTEGER NOT NULL DEFAULT 0,
@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS commands (
     created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
+    id TEXT PRIMARY KEY,               -- a sub-task's id is <parent>.<name>
+    parent TEXT,                       -- the task this one is a piece of; NULL = planned by the lead
     seq INTEGER NOT NULL,              -- order of creation
     title TEXT NOT NULL,
     brief TEXT NOT NULL,
@@ -103,6 +104,8 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        if "parent" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN parent TEXT")      # runs made before sub-tasks
 
     # --- generic -------------------------------------------------------------------
 
@@ -175,8 +178,18 @@ class DB:
         sets = ", ".join(f"{k} = ?" for k in fields)
         self.execute(f"UPDATE tasks SET {sets}, updated = ? WHERE id = ?", (*fields.values(), time.time(), task_id))
 
-    def open_tasks(self) -> list[sqlite3.Row]:
-        return [t for t in self.tasks() if t["status"] in OPEN]
+    def children(self, parent: str | None) -> list[sqlite3.Row]:
+        """The tasks one owner planned: the lead's (parent None) or a worker's sub-tasks."""
+        return [t for t in self.tasks() if t["parent"] == parent]
+
+    def descendants(self, task_id: str) -> list[sqlite3.Row]:
+        return [t for t in self.tasks() if t["id"].startswith(task_id + ".")]
+
+    def tree_spent(self, root: str) -> float:
+        """Spent by a top-level task, its reviewers and everything under it."""
+        row = self.one("SELECT COALESCE(SUM(spent), 0) AS s FROM agents WHERE task = ? OR task LIKE ?",
+                       (root, root + ".%"))
+        return float(row["s"])
 
     # --- inbox ---------------------------------------------------------------------
 

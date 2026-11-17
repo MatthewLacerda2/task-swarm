@@ -11,7 +11,8 @@ import asyncio
 import json
 import time
 
-from . import handlers, llm, prompts, sandbox
+from . import config, handlers, llm, prompts, sandbox
+from .db import OPEN
 from .handlers import Outcome
 from .run import Run, work_dir
 
@@ -125,7 +126,7 @@ async def _loop(run: Run, agent: str, text: str, closed: bool, box: _Box) -> Out
         if est > cfg.refuse_above:
             db.event(agent, "stopped", {"reason": "context", "estimate": est})
             return Outcome("failed", reason="context")
-        if calls >= cfg.max_calls:
+        if calls >= (cfg.plan_max_calls if role == "planner" else cfg.max_calls):
             db.event(agent, "stopped", {"reason": "calls"})
             return Outcome("failed", reason="calls")
 
@@ -150,14 +151,17 @@ async def _loop(run: Run, agent: str, text: str, closed: bool, box: _Box) -> Out
                 cut_off += 1
                 note = (f"Your reply hit the {cfg.max_tokens:,}-token limit before you did anything. "
                         "Think in smaller steps and act sooner.")
-            elif role != "lead" and not closed and nudges < 2:
+            # Ending a turn is how the lead waits, and how a worker waits for its sub-team.
+            may_wait = role == "lead" or closed or (
+                role == "worker" and any(t["status"] in OPEN for t in db.children(agent)))
+            if note is None and not may_wait and nudges < 2:
                 nudges += 1
-                tool = "report" if role == "worker" else "verdict"
+                tool = {"worker": "report", "reviewer": "verdict", "planner": "plan"}[role]
                 note = (f"You ended your turn without handing in. Carry on, and call `{tool}` when you are done; "
                         "if you can't finish, hand in anyway and say why.")
             mail = _mail(run, agent)
             if note is None and not mail:
-                if role == "lead" or closed:
+                if may_wait:
                     return Outcome("idle")
                 db.event(agent, "stopped", {"reason": "silent"})
                 return Outcome("failed", reason="silent")
@@ -197,14 +201,15 @@ def _save_est(run: Run, agent: str, est: int) -> None:
 
 async def _call(run: Run, agent: str, messages: list[dict], est: int) -> tuple[llm.LLMResponse | None, str]:
     """One sampling call under the budget and the concurrency limit: (response, "") or (None, why not)."""
-    res = run.budget.reserve(agent, llm.worst_case_cost(run.cfg.prices, est + 2000, run.cfg.max_tokens))
+    model = run.model_of(agent)
+    res = run.budget.reserve(agent, llm.worst_case_cost(config.prices(model), est + 2000, run.cfg.max_tokens))
     if isinstance(res, str):
         run.db.event(agent, "stopped", {"reason": res})
         run.wake.set()
         return None, res
     try:
         async with run.semaphore:
-            resp = await run.llm.sample(run.system, messages, run.cfg.max_tokens)
+            resp = await run.llm.sample(run.system, messages, run.cfg.max_tokens, model)
     except asyncio.CancelledError:
         run.budget.release(res)
         raise
@@ -235,13 +240,14 @@ async def _compact(run: Run, agent: str, messages: list[dict], est: int):
         run.db.event(agent, "stopped", {"reason": "context", "estimate": est})
         return None, est
     for attempt in range(2):
-        res = run.budget.reserve(agent, llm.worst_case_cost(run.cfg.prices, est, run.cfg.max_tokens))
+        model = run.model_of(agent)
+        res = run.budget.reserve(agent, llm.worst_case_cost(config.prices(model), est, run.cfg.max_tokens))
         if isinstance(res, str):
             run.db.event(agent, "stopped", {"reason": res})
             return None, est
         try:
             async with run.semaphore:
-                resp = await run.llm.compact(run.system, messages, run.cfg.max_tokens)
+                resp = await run.llm.compact(run.system, messages, run.cfg.max_tokens, model)
         except asyncio.CancelledError:
             run.budget.release(res)
             raise

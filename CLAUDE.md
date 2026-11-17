@@ -6,8 +6,8 @@ what it does and how to run it.
 
 ## Where things are
 
-- `taskswarm/orchestrator.py`: the schedule and the hand-offs (work, review, rework,
-  final review). No judgment lives here.
+- `taskswarm/orchestrator.py`: the schedule and the hand-offs (planner, work, review,
+  rework, sub-teams, final review). No judgment lives here.
 - `taskswarm/agent.py`: one agent's loop of model calls and tools.
 - `taskswarm/plan.py`, `taskswarm/store.py`: the gates on the plan and on store writes.
 - `taskswarm/tools.py`, `taskswarm/handlers.py`: the tools and what each does.
@@ -34,5 +34,16 @@ what it does and how to run it.
 - **A change to the sandbox comes with an escape test.**
 - **Run data never goes in the repository.** Machine-specific settings go in
   `*.local.*` files.
+- **Whoever holds a task decides how to do it.** Prompts and briefs hand out a result
+  to reach and how it is checked, never the steps. An agent goes back to whoever gave
+  it the task only for something it can't do without, or to say a premise is false.
+- **Splitting is bounded by checks, not by trust**: depth (`max_depth`), width
+  (`max_subtasks`, never one piece), money (a sub-team spends its parent task's
+  budget) and scope (only the lead sets the goal and the store's structure). A new
+  way to hand work down gets the same four bounds.
 - Tests drive whole runs with a scripted model (`tests/conftest.py`); a behavior
   change gets a test there. `uv run pytest` must pass before a commit.
+- **Every run against the real API gets an entry in `smoke-log.local.md`**
+  (gitignored): the command, the setup, the cost per agent, and what it showed,
+  including what went wrong. Its run folder is kept. Read the log before changing how
+  agents are prompted or scheduled.

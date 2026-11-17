@@ -34,10 +34,11 @@ TOOLS = [
     {
         "name": "plan",
         "description": (
-            "Lead only. Set or change the plan. The first call needs `goal` and `done_when`. Later calls only need "
-            "what changes: new tasks, redefined tasks that haven't started (same id), tasks to cancel, new "
-            "collections or new fields. The whole change is checked first; if anything is wrong nothing changes "
-            "and you are told every problem. Tasks with nothing blocking them start right away."
+            "Set or change the plan. The first call needs `goal` and `done_when`. Later calls only need what "
+            "changes: new tasks, redefined tasks that haven't started (same id), tasks to cancel, new collections "
+            "or new fields. The whole change is checked first; if anything is wrong nothing changes and you are "
+            "told every problem. Tasks with nothing blocking them start right away. A worker can call it with "
+            "only `tasks` and `cancel`, to split its own task into sub-tasks."
         ),
         "input_schema": {
             "type": "object",
@@ -149,7 +150,8 @@ TOOLS = [
 ]
 
 ALLOWED = {
+    "planner": {"bash", "plan"},
     "lead": {"bash", "plan", "send_message", "store_write", "finish"},
-    "worker": {"bash", "send_message", "store_write", "report"},
+    "worker": {"bash", "plan", "send_message", "store_write", "report"},
     "reviewer": {"bash", "send_message", "verdict"},
 }

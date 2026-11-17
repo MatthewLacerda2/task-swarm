@@ -15,7 +15,8 @@ def system_prompt(cfg: config.RunConfig) -> str:
 
 
 def identity(agent: str, role: str) -> str:
-    what = {"lead": "the lead of this team", "worker": "a worker", "reviewer": "a reviewer"}[role]
+    what = {"planner": "the planner", "lead": "the lead of this team", "worker": "a worker",
+            "reviewer": "a reviewer"}[role]
     return f"You are `{agent}`, {what}."
 
 
@@ -26,8 +27,27 @@ def compacted_note(agent: str, role: str) -> str:
     )
 
 
-def lead_first(task: str) -> str:
-    return f"{identity('lead', 'lead')}\n\n# The task\n\n{task}"
+def planner_first(task: str) -> str:
+    return f"{identity('planner', 'planner')}\n\n# The task\n\n{task}"
+
+
+def lead_first(run: Run, planned: bool) -> str:
+    parts = [identity("lead", "lead"), f"# The task\n\n{run.db.get_meta('task')}"]
+    if planned:
+        tasks = []
+        for t in run.db.children(None):
+            blockers = json.loads(t["blocked_by"])
+            after = f" (after {', '.join(blockers)})" if blockers else ""
+            tasks.append(f"## `{t['id']}`: {t['title']}{after}\n\n{t['brief']}\n\nVerify: {t['verify']}")
+        parts += [
+            "# The plan\n\nThe planner drafted this plan and its first tasks have started. It is yours now.",
+            f"Goal: {run.db.get_meta('goal')}",
+            f"Done when: {run.db.get_meta('done_when')}",
+            *tasks,
+            _store(run),
+            "End your turn to wait for results, unless you see something in the plan to fix first.",
+        ]
+    return "\n\n".join(parts)
 
 
 def _store(run: Run) -> str:
@@ -41,6 +61,16 @@ def worker_first(run: Run, task) -> str:
         f"# Your task: {task['title']}\n\n{task['brief']}",
         f"# How your work will be checked\n\n{task['verify']}",
     ]
+    owner = task["parent"] or "lead"
+    from .plan import depth
+    if depth(task["id"]) < run.cfg.max_depth:
+        split = "You may split it into sub-tasks if it is too much for one agent."
+    else:
+        split = "It can't be split into sub-tasks."
+    if task["parent"]:
+        parent = run.db.task(task["parent"])
+        parts.insert(2, f"# The task yours is a piece of: `{parent['id']}`, {parent['title']}")
+    parts.append(f"This task was given to you by `{owner}`: that is who to ask, and who gets your report. {split}")
     blockers = [run.db.task(b) for b in json.loads(task["blocked_by"])]
     if blockers:
         lines = ["# Reports of the tasks yours builds on"]
@@ -65,12 +95,18 @@ def reviewer_first(run: Run, reviewer: str, task) -> str:
         f"\"_task\": \"{task['id']}\". This is review {task['attempts']} of at most {run.cfg.max_attempts}.",
         _store(run),
     ]
+    pieces = run.db.children(task["id"])
+    if pieces:
+        lines = [f"- `{t['id']}` ({t['status']}): {t['title']}" for t in pieces]
+        parts.insert(5, "# Sub-tasks\n\nThe worker split this task. Each piece that is done was reviewed by itself; "
+                        "you check the whole, including what the pieces don't cover and how they were put "
+                        "together. Their files are in /task/work/<id>/.\n" + "\n".join(lines))
     return "\n\n".join(parts)
 
 
 def final_first(run: Run, reviewer: str, deliverable: str, summary: str) -> str:
     tasks = []
-    for t in run.db.tasks():
+    for t in run.db.children(None):
         line = f"- `{t['id']}` ({t['status']}): {t['title']}"
         if t["status"] == "done" and t["summary"]:
             line += f"\n  Report: {t['summary'][:600]}"

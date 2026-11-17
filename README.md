@@ -10,18 +10,33 @@ what the team finds goes into a structured store where every record names its so
 ## How it works
 
 ```
-task ──> lead ──plan──> tasks (a dependency graph) ──> deliverable ──> final review
-                          │
-                          ├─ worker does one task ──report──> reviewer ──pass──> done
-                          │         ▲                            │
-                          │         └────── findings ◄── fail ───┘   (up to 3 reports)
-                          └─ a task starts when everything it is blocked by is done
+task ──> planner ──plan──> lead ──> tasks (a dependency graph) ──> deliverable ──> final review
+        (stronger model)              │
+                                      ├─ worker does one task ──report──> reviewer ──pass──> done
+                                      │     │   ▲                            │
+                                      │     │   └────── findings ◄── fail ───┘   (up to 3 reports)
+                                      │     └─ may split its task once into sub-tasks it owns
+                                      └─ a task starts when everything it is blocked by is done
 ```
 
-- **The lead plans and puts together; it doesn't do the pieces.** Its plan sets the
-  goal, how the finished work will be checked (`done_when`), the structure of the
-  store, and the tasks. Each task has a brief that stands alone and a `verify` that
-  says how to check it. The plan can change at any time.
+- **A stronger model drafts the plan.** A good plan lifts every worker under it, so
+  the first draft is written by Claude Opus 5.5 (`plan_model`) in one or two calls;
+  the lead and the rest of the team run on Claude Haiku 5.5. The planner is skipped
+  when the budget is too small for it (under about US$ 1.10), or with
+  `--set plan_model=`; then the lead plans.
+- **The lead owns the plan and puts the result together; it doesn't do the pieces.**
+  The plan sets the goal, how the finished work will be checked (`done_when`), the
+  structure of the store, and the tasks. Each task has a brief that stands alone and
+  a `verify` that says how to check it. The plan can change at any time.
+- **Whoever holds a task decides how to do it.** Tasks hand out a result to reach,
+  not steps to follow. A worker goes back to whoever gave it the task for two things
+  only: something it can't do the task without, or a premise in its brief that turned
+  out to be false.
+- **A worker may split its own task into sub-tasks**, which it then owns: their
+  reports come to it, and it still hands in the whole task. What keeps that from
+  running away: a sub-task can't be split again; a task splits into two to six
+  pieces; the sub-team spends its parent task's budget, not new money; only the lead
+  sets the goal and the store's structure.
 - **The dependency graph is the schedule.** A task starts when the tasks it is
   blocked by have passed review, and its worker is handed their reports. Everything
   else runs in parallel.
@@ -55,6 +70,7 @@ Under it, reused from [swarm](https://github.com/MatthewLacerda2/swarm):
 - **Budget:** every model call reserves its worst-case cost first, so parallel agents
   can't overspend. At the run budget no new task starts and the lead is asked to
   deliver; at the hard stop (1.2 x) the run pauses and can be resumed with more.
+  Each agent has its own cap, and so does each top-level task with everything under it.
 - **Cost:** every agent shares one cached prompt, whatever its role, and
   conversations are compacted before they reach the 100k-token price tier.
 - **Resumable:** all state is in SQLite and plain files, written before each next
@@ -107,15 +123,26 @@ Machine-specific settings go in files named `*.local.*`, which git ignores (see
 
 ## What it costs
 
-Measured with Claude Haiku 5.5: a five-product market survey (5 tasks, 12 agents, 35
-sourced records, every piece reviewed against its sources) took 5 minutes and
-US$ 0.05. Expect a team to use several times the tokens of one agent doing the same
-task; what that buys is independent checking and parallel work.
+Measured on a five-product market survey (35 sourced records, every piece reviewed
+against its sources):
+
+| who planned | tasks | time | cost |
+|---|---|---|---|
+| the lead (Claude Haiku 5.5) | 5, one per product | 5 min | US$ 0.05 |
+| the planner (Claude Opus 5.5) | 2, one per kind of source | 8 min | US$ 0.15, of which the plan is 0.09 |
+
+On a task this small the plan costs more than the work. The planner earns its price
+when the work under it is much larger than the plan. Expect a team to use several
+times the tokens of one agent doing the same task; what that buys is independent
+checking and parallel work.
 
 ## Limits today
 
-- **One level of planning.** Only the lead splits work; a worker can't hand part of
-  its task to a sub-team.
+- **Sub-teams are tested with a scripted model only.** In the real runs so far no
+  worker chose to split its task.
+- **A reviewer checks a record against its source, not how the source was read.** Two
+  runs stored different entry prices for the same product, one from the page's hidden
+  structured data and one from the visible page, and both passed review.
 - **The tool checks a record's shape, agents check its truth.** `store_write` refuses
   a record without a source URL, but whether the page says what the record says is
   checked by reviewers, who sample. A sampled check can miss a wrong record.
@@ -123,8 +150,10 @@ task; what that buys is independent checking and parallel work.
   final review.
 - **Built for research, not for writing code together.** There is no shared
   repository with merges, as swarm had.
-- **Only Claude Haiku 5.5 has prices** in `taskswarm/config.py`; another model needs
-  its prices added before the budget can be trusted.
+- **Models:** `taskswarm/config.py` has prices for Claude Haiku 5.5, Sonnet 5.5,
+  Opus 5.5 and Fable 5.2. The team has only been run on Haiku 5.5 and the planner
+  only on Opus 5.5. Fable 5.2 as planner needs `planner_budget=0.80` and a run
+  budget of about US$ 2.20 or more.
 
 ## Safety
 

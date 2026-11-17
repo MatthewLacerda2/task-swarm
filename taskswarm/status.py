@@ -37,16 +37,23 @@ def render(run_id: str) -> str:
         hit = 100 * (u["r"] or 0) / prompt if prompt else 0
         out.append(f"Calls {u['n']}, cache hit {hit:.0f}%, output {u['o'] or 0:,} tokens, compactions {u['c'] or 0}, "
                    f"avg latency {u['l'] or 0:.1f} s, US$ {spent / u['n']:.4f} per call")
+    planner = db.execute("SELECT spent, calls FROM agents WHERE id = 'planner'").fetchone()
+    if planner:
+        out.append(f"Plan drafted by {cfg.plan_model}: {planner['calls']} calls, US$ {planner['spent']:.3f}")
     if goal := _meta(db, "goal"):
         out += ["", f"Goal: {goal}", f"Done when: {_meta(db, 'done_when')}"]
 
     tasks = db.execute("SELECT * FROM tasks ORDER BY seq").fetchall()
     if tasks:
         out += ["", "Tasks:"]
-        for t in tasks:
-            cost = db.execute("SELECT COALESCE(SUM(spent), 0) FROM agents WHERE task = ?", (t["id"],)).fetchone()[0]
+        # A task's cost includes its reviewers and, for a task that was split, its sub-team.
+        for t in sorted(tasks, key=lambda t: [next(x["seq"] for x in tasks if x["id"] == ".".join(
+                t["id"].split(".")[:i + 1])) for i in range(t["id"].count(".") + 1)]):
+            cost = db.execute("SELECT COALESCE(SUM(spent), 0) FROM agents WHERE task = ? OR task LIKE ?",
+                              (t["id"], t["id"] + ".%")).fetchone()[0]
             blockers = json.loads(t["blocked_by"])
-            line = f"  {t['id']:<24} {t['status']:<10} reports {t['attempts']}  US$ {cost:.3f}  {t['title']}"
+            name = "  " * t["id"].count(".") + t["id"]
+            line = f"  {name:<28} {t['status']:<10} reports {t['attempts']}  US$ {cost:.3f}  {t['title']}"
             if blockers:
                 line += f"  (after {', '.join(blockers)})"
             out.append(line)

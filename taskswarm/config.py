@@ -44,9 +44,24 @@ class Prices:
 
 
 # The budget is only as good as these numbers: a model is usable once its prices are here.
+# Cache writes cost 1.25x (5 minutes) and 2x (1 hour) the input price. Only Haiku 5.5
+# charges more for long prompts.
 MODELS = {
     "claude-haiku-5-5": Prices(input=0.10, cache_write_5m=0.125, cache_write_1h=0.20, cache_read=0.01, output=0.50),
+    "claude-sonnet-5-5": Prices(input=2.00, cache_write_5m=2.50, cache_write_1h=4.00, cache_read=0.10, output=10.00,
+                                long_multiplier=1),
+    "claude-opus-5-5": Prices(input=4.00, cache_write_5m=5.00, cache_write_1h=8.00, cache_read=0.20, output=20.00,
+                              long_multiplier=1),
+    "claude-fable-5-2": Prices(input=8.00, cache_write_5m=10.00, cache_write_1h=16.00, cache_read=0.20, output=40.00,
+                               long_multiplier=1),
 }
+
+
+def prices(model: str) -> Prices:
+    if model not in MODELS:
+        raise SystemExit(f"no prices for model {model!r}: add them to MODELS in taskswarm/config.py")
+    return MODELS[model]
+
 
 LEAD_NOTICES = (50, 80, 100)   # % of the run budget at which the lead is told
 
@@ -55,14 +70,23 @@ LEAD_NOTICES = (50, 80, 100)   # % of the run budget at which the lead is told
 class RunConfig:
     run_id: str
     model: str = "claude-haiku-5-5"
+    # The plan's first draft is written by a stronger model: a good plan lifts every
+    # worker under it. "" = the lead plans by itself.
+    plan_model: str = "claude-opus-5-5"
+    plan_effort: str = "high"
+    planner_budget: float = 0.60
+    plan_max_calls: int = 6
     # Budgets (US$). At run_budget the wind-down starts: no new task starts and the lead
     # is asked to deliver. At run_budget x hard_stop_ratio the run stops.
     run_budget: float = 2.0
     hard_stop_ratio: float = 1.2
     lead_budget: float = 0.60
-    agent_budget: float = 0.40
+    agent_budget: float = 0.40       # any one worker or reviewer
+    task_budget: float = 1.00        # a top-level task with its reviewers and its whole sub-team
     # The plan
-    max_tasks: int = 40
+    max_tasks: int = 40              # in the whole run, sub-tasks included
+    max_depth: int = 2               # 1 = only the lead splits work; 2 = a worker may split its task once
+    max_subtasks: int = 6            # pieces one worker may split its task into
     max_parallel: int = 4            # tasks worked on at once
     max_attempts: int = 3            # reports a worker gets reviewed before its task fails
     max_final_reviews: int = 2
@@ -90,9 +114,7 @@ class RunConfig:
 
     @property
     def prices(self) -> Prices:
-        if self.model not in MODELS:
-            raise SystemExit(f"no prices for model {self.model!r}: add them to MODELS in taskswarm/config.py")
-        return MODELS[self.model]
+        return prices(self.model)
 
     @property
     def run_dir(self) -> Path:
