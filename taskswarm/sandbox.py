@@ -380,11 +380,13 @@ def agent_env(agent_id: str) -> dict[str, str]:
 
 
 def agent_spec(cfg: config.RunConfig, agent_id: str) -> SandboxSpec:
-    """Everyone's folders, the store, the deliverable and saved outputs read-only; its own folder read-write."""
+    """Everyone's folders, the store, the channels, the deliverable and saved outputs read-only; its own
+    folder read-write."""
     run_dir = cfg.run_dir
     binds = [
         Bind(run_dir / "work", f"{ROOT}/work"),
         Bind(run_dir / "store", f"{ROOT}/store"),
+        Bind(run_dir / "channels", f"{ROOT}/channels"),
         Bind(run_dir / "deliverable", f"{ROOT}/deliverable"),
         Bind(run_dir / "outputs", f"{ROOT}/outputs"),
         Bind(config.AGENT_BIN, f"{ROOT}/bin"),

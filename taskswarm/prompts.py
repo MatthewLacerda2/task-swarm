@@ -53,7 +53,9 @@ def lead_first(run: Run, planned: bool) -> str:
             after = f" (after {', '.join(blockers)})" if blockers else ""
             tasks.append(f"## `{t['id']}`: {t['title']}{after}\n\n{t['brief']}\n\nVerify: {t['verify']}")
         parts += [
-            "# The plan\n\nThe planner drafted this plan and its first tasks have started. It is yours now.",
+            "# The plan\n\n" + ("The user gave this plan with the task" if run.db.get_meta("plan_from") == "user"
+                                  else "The planner drafted this plan")
+            + " and its first tasks have started. It is yours now.",
             f"Goal: {run.db.get_meta('goal')}",
             f"Done when: {run.db.get_meta('done_when')}",
             *tasks,
@@ -136,7 +138,8 @@ def final_first(run: Run, reviewer: str, deliverable: str, summary: str) -> str:
         f"# What to check\n\n{run.db.get_meta('done_when')}",
         f"# The deliverable\n\n/task/deliverable/{deliverable}\n\nThe lead's summary:\n{summary}",
         "# The tasks\n\n" + ("\n".join(tasks) or "(none)"),
-        _store(run) + f"\n\nSignals logged (conflicting records): {run.store.signals}.",
+        _store(run) + f"\n\nSignals logged (conflicting records): {run.store.signals}. Corrections logged "
+                      f"(records updated or deleted after they were stored): {run.store.changes}, in changes.jsonl.",
         "Check the deliverable against the store and the sources, not only against itself: a claim in it should "
         "trace to a record or a file. Check too that it is honest about what was not found.",
     ]

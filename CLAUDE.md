@@ -10,6 +10,7 @@ what it does and how to run it.
   rework, sub-teams, final review). No judgment lives here.
 - `taskswarm/agent.py`: one agent's loop of model calls and tools.
 - `taskswarm/plan.py`, `taskswarm/store.py`: the gates on the plan and on store writes.
+- `taskswarm/channels.py`: channels, where agents post tips for each other.
 - `taskswarm/tools.py`, `taskswarm/handlers.py`: the tools and what each does.
 - `taskswarm/prompts/system.md`: what every agent is told.
 - `taskswarm/sandbox.py`, `taskswarm/safeio.py`: what keeps agents inside their folder.
@@ -32,6 +33,10 @@ what it does and how to run it.
 - **The orchestrator never trusts a path an agent gave it.** Files in agent folders
   are read through `safeio`; the sandbox never mounts the user's home.
 - **A change to the sandbox comes with an escape test.**
+- **Every run folder explains itself.** `taskswarm/readme.py` writes `<run>/README.md`
+  from the database and the store each time a run starts or stops: what was asked,
+  where each kind of file is, the store's fields. The tool writes it, not an agent.
+  Anything new a run leaves in its folder gets a line there.
 - **Run data never goes in the repository.** Machine-specific settings go in
   `*.local.*` files.
 - **Whoever holds a task decides how to do it.** Prompts and briefs hand out a result
@@ -41,6 +46,15 @@ what it does and how to run it.
   may contest a premise, never override it. The owner's answer is stored on the task
   (`tasks.decisions`) and shown to the reviewer; a new way to change a running task
   goes through the owner and is recorded the same way.
+- **The store is corrected in the store.** A wrong record is updated or deleted
+  (`Store.change`), never left in place with the right version kept in a file. Who
+  may change a record follows who owns the task that wrote it; every change is
+  all-or-nothing, passes the write gates, and is logged without the old content.
+- **A plan the user gives passes the same gates as one an agent sets** (`plan.give`),
+  and no planner is called for it.
+- **A channel post is a tip: it wakes nobody and changes no task.** Posts ride along
+  with something an agent is given anyway (a command's result, the text that woke
+  it). Anything that needs an answer or changes a task goes by `send_message`.
 - **No one hands work to a stronger model than its own** (worker <= lead <= planner,
   `RunConfig.problems`). The user picks the models before the run; agents don't.
 - **Splitting is bounded by checks, not by trust**: depth (`max_depth`), width

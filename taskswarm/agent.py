@@ -9,14 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 
-from . import config, handlers, llm, prompts, sandbox
+from . import channels, config, handlers, llm, plan, prompts, sandbox
 from .db import OPEN
 from .handlers import Outcome
 from .run import Run, work_dir
 
 RESUMED = "[The run was interrupted and has resumed. Carry on from where you were.]"
+# `sleep 120`, `time.sleep(120)`: a wait, as opposed to a short pause between requests.
+WAIT_RE = re.compile(r"\bsleep\b[\s(]*(\d+(?:\.\d+)?)")
+WAIT_SECONDS = 15
 
 
 def _text_block(text: str) -> dict:
@@ -36,6 +40,13 @@ def _mail(run: Run, agent: str) -> list[str]:
         head = "[Update]" if m["from_agent"] == "system" else f"[Message from `{m['from_agent']}`]"
         out.append(f"{head}\n{m['body']}")
     return out
+
+
+def _news(run: Run, agent: str) -> list[str]:
+    """Channel posts the agent hasn't seen. They ride along with something else it is given
+    (a command's result, the text that woke it), so a post never costs it a call."""
+    text = channels.unread(run, agent)
+    return [text] if text else []
 
 
 class _Box:
@@ -90,6 +101,7 @@ async def _loop(run: Run, agent: str, text: str, closed: bool, box: _Box) -> Out
     parts = [p for p in [text, *_mail(run, agent)] if p]
     if not parts:
         parts = [RESUMED]
+    parts += _news(run, agent)
     content: list[dict] = []
     if messages and messages[-1]["role"] == "assistant":
         # A tool call left without a result (a crash or a stop mid-call) must be answered first.
@@ -186,13 +198,29 @@ async def _loop(run: Run, agent: str, text: str, closed: bool, box: _Box) -> Out
             else:
                 out, err, outcome = await handlers.handle(run, agent, closed, tu["name"], tu.get("input"))
             results.append(_tool_result(tu["id"], out, err))
-        blocks = results + ([] if outcome else [_text_block(t) for t in _mail(run, agent)])
+        blocks = results + ([] if outcome else [_text_block(t) for t in _mail(run, agent) + _news(run, agent)])
         messages.append({"role": "user", "content": blocks})
         db.add_message(agent, "user", blocks)
         est += sum(llm.estimate_tokens(b.get("content") or b.get("text") or "") for b in blocks)
         _save_est(run, agent, est)
         if outcome is not None:
             return outcome
+
+
+def _waiting_command(run: Run, agent: str, cmd: str) -> str | None:
+    """Refuse a command that sleeps while the agent has tasks open under it.
+
+    Whoever owns open tasks waits by ending its turn: it is woken the moment one
+    settles. Inside a sleeping command it hears nothing until the command returns.
+    """
+    waits = [float(n) for n in WAIT_RE.findall(cmd)]
+    if not waits or max(waits) < WAIT_SECONDS:
+        return None
+    open_tasks = plan.moving(run, None if agent == "lead" else agent)
+    if not open_tasks:
+        return None
+    return (f"Not run: this command sleeps {max(waits):g} seconds while you have tasks open ({', '.join(open_tasks)}). "
+            "End your turn instead: you are woken the moment one of them settles, and a sleeping command can't be.")
 
 
 def _save_est(run: Run, agent: str, est: int) -> None:
@@ -279,6 +307,8 @@ async def _execute(run: Run, agent: str, seq: int, box: _Box, tool_use: dict, ma
     cmd = inp.get("command")
     if not isinstance(cmd, str) or not cmd.strip():
         return "Error: the bash tool needs a non-empty `command`.", True
+    if refusal := _waiting_command(run, agent, cmd):
+        return refusal, True
 
     sb = await box.get()
     t0 = time.monotonic()

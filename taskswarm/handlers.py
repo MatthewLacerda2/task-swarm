@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from . import plan, safeio, sandbox
+from . import channels, plan, safeio, sandbox
 from .db import OPEN
 from .run import Run, work_dir
 from .tools import ALLOWED
@@ -104,6 +104,11 @@ async def _send_message(run: Run, agent: str, row, closed: bool, inp: dict) -> R
     return f"Sent to `{to}`.", False, None
 
 
+async def _post(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
+    text, is_error = channels.post(run, agent, inp.get("channel"), inp.get("text"))
+    return text, is_error, None
+
+
 def _jsonl(fd: int, bad: list[int]):
     with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
         for n, line in enumerate(f, 1):
@@ -148,6 +153,49 @@ async def _store_write(run: Run, agent: str, row, closed: bool, inp: dict) -> Re
     run.db.event(agent, "store_write", {"collection": collection, "accepted": res.accepted, "rejected": res.rejected,
                                         "duplicates": res.duplicates, "conflicts": res.conflicts})
     return text, res.accepted == 0 and res.rejected > 0, None
+
+
+REASON_MIN = 10
+
+
+def _store_change(action: str):
+    """store_update and store_delete: the same picking, the same owners, the same log."""
+
+    async def handler(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
+        collection = inp.get("collection")
+        if collection not in run.store.schema:
+            have = ", ".join(f"`{c}`" for c in run.store.schema) or "none yet"
+            return f"There is no collection `{collection}` (collections: {have}).", True, None
+        if row["role"] == "worker" and (closed or run.db.task(agent)["status"] != "running"):
+            return ("Your task is handed in, so what it stored is what is being checked and can't change now. If the "
+                    "review sends it back you can correct it then; otherwise tell `lead` what is wrong."), True, None
+        reason = inp.get("reason")
+        if not isinstance(reason, str) or len(reason.strip()) < REASON_MIN:
+            return "`reason` is missing: say in a sentence why these records change. It is logged.", True, None
+        ids, where, new_values = inp.get("ids"), inp.get("where"), inp.get("set")
+        if (ids is None) == (where is None):
+            return "Pick the records with either `ids` or `where`, not both.", True, None
+        if ids is not None and not (isinstance(ids, list) and ids and all(type(i) is int for i in ids)):
+            return "`ids` must be a list of record numbers (the `_id` of each record).", True, None
+        if where is not None and not (isinstance(where, dict) and where):
+            return ("`where` must name at least one field and its value. To pick everything a task stored, use "
+                    '{"_task": "<task id>"}.'), True, None
+        if action == "update" and not (isinstance(new_values, dict) and new_values):
+            return "`set` must map at least one field to its new value.", True, None
+
+        # A record belongs to whoever wrote it. A task's owner may also change what its tasks wrote:
+        # the lead any record, a worker the records of its sub-tasks.
+        def may_change(rec: dict) -> bool:
+            return (row["role"] == "lead" or rec.get("_by") == agent
+                    or str(rec.get("_task") or "").startswith(agent + "."))
+
+        res = await asyncio.to_thread(run.store.change, collection, agent, may_change, reason.strip(), ids, where,
+                                      new_values if action == "update" else None)
+        run.db.event(agent, f"store_{action}", {"collection": collection, "changed": res.changed,
+                                                 "refused": bool(res.problems)})
+        return res.text(collection, action), bool(res.problems), None
+
+    return handler
 
 
 async def _report(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
@@ -214,6 +262,7 @@ async def _finish(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
 
 
 _HANDLERS = {
-    "plan": _plan, "send_message": _send_message, "store_write": _store_write,
+    "plan": _plan, "send_message": _send_message, "post": _post, "store_write": _store_write,
+    "store_update": _store_change("update"), "store_delete": _store_change("delete"),
     "report": _report, "verdict": _verdict, "finish": _finish,
 }

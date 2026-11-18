@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import sqlite3
 
@@ -70,12 +71,43 @@ def render(run_id: str) -> str:
         if sig.exists() and sig.stat().st_size:
             with sig.open() as f:
                 out.append(f"  signals: {sum(1 for _ in f)} conflicting records, in {sig}")
+        chg = cfg.run_dir / "store" / "changes.jsonl"
+        if chg.exists() and chg.stat().st_size:
+            with chg.open() as f:
+                out.append(f"  corrections: {sum(1 for _ in f)} updates or deletions, in {chg}")
+
+    try:
+        chans = db.execute("SELECT c.name, c.created, c.created_by, COUNT(p.id) AS n FROM channels c"
+                           " LEFT JOIN posts p ON p.channel = c.name GROUP BY c.name ORDER BY c.created").fetchall()
+    except sqlite3.OperationalError:      # a run made before channels existed
+        chans = []
+    if chans:
+        out += ["", f"Channels (in {cfg.run_dir / 'channels'}):"]
+        for c in chans:
+            made = dt.datetime.fromtimestamp(c["created"]).strftime("%Y-%m-%d %H:%M")
+            out.append(f"  #{c['name']:<24} {c['n']} posts, created {made} by {c['created_by']}")
 
     if d := _meta(db, "deliverable"):
         out += ["", f"Deliverable: {cfg.run_dir / 'deliverable' / d['file']}", f"  {d['summary']}"]
     if findings := _meta(db, "final_findings"):
         out += ["", "Final review:", f"  {findings}"]
     return "\n".join(out)
+
+
+def first_plan(run_id: str) -> dict:
+    """The plan a run started from: the input of the first `plan` call that was accepted."""
+    db = _open(run_id)
+    rows = db.execute("SELECT role, content FROM messages WHERE agent IN ('planner', 'lead') ORDER BY id").fetchall()
+    refused = {b["tool_use_id"] for r in rows if r["role"] == "user" for b in json.loads(r["content"])
+               if b.get("type") == "tool_result" and b.get("is_error")}
+    for r in rows:
+        if r["role"] == "assistant":
+            for b in json.loads(r["content"]):
+                if b.get("type") == "tool_use" and b["name"] == "plan" and b["id"] not in refused:
+                    return b.get("input") or {}
+    if given := db.execute("SELECT 1 FROM meta WHERE key = 'plan_from'").fetchone():
+        raise SystemExit(f"run {run_id} started from a plan file; no agent set its plan")
+    raise SystemExit(f"run {run_id} has no accepted plan")
 
 
 def transcript(run_id: str, agent: str) -> str:

@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from conftest import COLLECTIONS, GOAL, FakeLLM, call, lead_script, task, texts_of, tool_calls, worker
+from conftest import COLLECTIONS, GOAL, FakeLLM, bash, call, lead_script, task, texts_of, tool_calls, worker
 from taskswarm import config, orchestrator, plan
 from taskswarm import run as runmod
 
@@ -235,3 +235,63 @@ def test_every_priced_model_has_sane_prices():
     for name, p in config.MODELS.items():
         assert p.cache_write_5m == pytest.approx(1.25 * p.input) and p.cache_write_1h == pytest.approx(2 * p.input), name
         assert p.cache_read < p.input < p.output, name
+
+
+# --- waiting -----------------------------------------------------------------------------
+
+
+async def test_an_owner_cannot_wait_inside_a_command(make_run):
+    def react(last):
+        if "Plan saved" in last:
+            return [bash("sleep 120; cat /task/store/schema.json"), bash("python3 -c 'import time; time.sleep(60)'"),
+                    bash("sleep 2; echo a short pause is fine")]
+
+    def splitting(messages):
+        if "Plan saved" in texts_of(messages[-1]):
+            return [bash("sleep 90")]
+        return splitter([task("x"), task("y")])(messages)
+
+    run, fake = make_run({
+        "lead": lead_script(GOAL | {"tasks": [task("big"), task("plain")]}, react=react),
+        "big": splitting, "big.x": worker(), "big.y": worker(),
+        "plain": [[bash("sleep 16; echo a worker with nothing under it may sleep")], [call("report", summary="ok")]],
+    })
+    assert await asyncio.wait_for(orchestrator.execute(run), 60) == "done"
+    lead, big = "\n".join(fake.seen["lead"]), "\n".join(fake.seen["big"])
+    assert "this command sleeps 120 seconds while you have tasks open (big, plain)" in lead
+    assert "this command sleeps 60 seconds" in lead and "a short pause is fine" in lead
+    assert "this command sleeps 90 seconds while you have tasks open (big.x, big.y)" in big
+    assert "may sleep" in "\n".join(fake.seen["plain"])
+
+
+# --- a plan the user gives with the task ----------------------------------------------------
+
+
+async def test_a_given_plan_skips_the_planner_and_goes_through_the_same_gates(make_run):
+    from taskswarm import status
+
+    first, fake1 = make_run({
+        "planner": [[call("plan", **GOAL, collections=COLLECTIONS, tasks=[task("find"), task("check", ["find"])])]],
+        "lead": lead_script(None), "find": worker(summary="found"), "check": worker(summary="checked"),
+    }, run_id="first", plan_model=OPUS, run_budget=5.0)
+    assert await orchestrator.execute(first) == "done"
+    exported = status.first_plan("first")
+    assert [t["id"] for t in exported["tasks"]] == ["find", "check"] and exported["goal"] == GOAL["goal"]
+
+    # the same plan, handed to a new run: no planner call, although a planner is set and would fit
+    run, fake = make_run({"lead": lead_script(None), "find": worker(summary="found"),
+                          "check": worker(summary="checked")}, run_id="second", plan_model=OPUS, run_budget=5.0)
+    ok, text = plan.give(run, exported)
+    assert ok, text
+    assert await orchestrator.execute(run) == "done"
+    assert "planner" not in fake.calls and "planner" in fake1.calls
+    lead = fake.seen["lead"][0]
+    assert "The user gave this plan with the task" in lead and "## `check`: Task check (after find)" in lead
+    assert orchestrator.summary(run)["tasks"] == {"find": "done", "check": "done"}
+
+    # a plan that breaks a gate is refused whole, with every problem named
+    bad, _ = make_run({}, run_id="third")
+    ok, text = plan.give(bad, GOAL | {"tasks": [task("a", ["missing"]), task("b", brief="too short")]})
+    assert not ok and "missing" in text and "brief" in text
+    assert bad.db.tasks() == [] and bad.db.get_meta("plan_from") is None
+    assert plan.give(bad, ["not", "a", "plan"])[0] is False

@@ -288,3 +288,16 @@ def overview(run: Run, owner: str | None = None) -> str:
     if bad := stuck(run, owner):
         lines.append(f"Can never start, because a task they depend on failed: {', '.join(bad)}.")
     return "\n".join(lines)
+
+
+def give(run: Run, inp: object) -> tuple[bool, str]:
+    """Start a run from a plan the user wrote. It passes the same gates as a plan an agent sets, no
+    planner is called, and the lead owns it from the first minute."""
+    if not isinstance(inp, dict):
+        return False, "The plan must be a JSON object with `goal`, `done_when`, and usually `collections` and `tasks`."
+    ok, text = apply(run, inp)
+    if ok:
+        run.db.set_meta("planner_done", True)
+        run.db.set_meta("plan_from", "user")
+        run.db.event(None, "plan_given", {"tasks": [t.get("id") for t in inp.get("tasks") or []]})
+    return ok, text

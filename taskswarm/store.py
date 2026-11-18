@@ -13,9 +13,16 @@ A gate refuses the record and says why. A signal lets it through and is kept for
 the lead and the reviewers: two records with the same key and different values are
 a conflict, the first is kept, and both are written to signals.jsonl.
 
+A stored record can be corrected or removed (`change`), by whoever the caller says
+may: the result has to pass the same gates, the whole change is applied or none of
+it, and what was done to which records, by whom and why goes in changes.jsonl. The
+old content is not kept there, so a record removed for holding something it should
+not hold is really gone.
+
 Records are plain JSON lines under <run>/store/<collection>.jsonl, read-only inside
 the sandboxes at /task/store, so agents read them with any tool. The orchestrator
-stamps who wrote each record (`_by`, `_task`) and when (`_at`).
+stamps each record with its number (`_id`), who wrote it (`_by`, `_task`) and when
+(`_at`), and who last changed it (`_edited_by`, `_edited_at`).
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 from urllib.parse import urlparse
 
 TYPES = ("string", "integer", "number", "boolean", "date", "url")
@@ -42,7 +49,7 @@ UNIVERSAL = {
     "retrieved": {"type": "date"},
     "quote": {"type": "string", "max_length": 500},   # the words on the page that support the record
 }
-STAMPS = ("_by", "_task", "_at")
+STAMPS = ("_id", "_by", "_task", "_at", "_edited_by", "_edited_at")
 MAX_REASONS = 10
 
 
@@ -172,12 +179,29 @@ class WriteResult:
                  f"{self.duplicates} already there, {self.conflicts} in conflict with an existing record."]
         if self.conflicts:
             lines.append("A conflict is a record with the same key as a stored one and different values. The stored "
-                         "one was kept and both were logged in /task/store/signals.jsonl. Say so in your report.")
+                         "one was kept and both were logged in /task/store/signals.jsonl. If the stored one is the "
+                         "wrong one, correct it with `store_update`; otherwise say so in your report.")
         if self.rejected:
             lines.append("Rejected (nothing was written for these):")
             lines += [f"- {n} x {reason}" for reason, n in self.reasons.most_common(MAX_REASONS)]
             lines += [f"  e.g. {e}" for e in self.examples[:3]]
         return "\n".join(lines)
+
+
+@dataclass
+class ChangeResult:
+    changed: int = 0
+    problems: list[str] = field(default_factory=list)      # why nothing was changed
+
+    def text(self, collection: str, action: str) -> str:
+        if self.problems:
+            return "Nothing was changed:\n" + "\n".join(f"- {p}" for p in self.problems[:MAX_REASONS + 2])
+        done = "deleted" if action == "delete" else "updated"
+        return f"{collection}: {self.changed} records {done}. Logged in /task/store/changes.jsonl."
+
+
+def _now() -> str:
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class Store:
@@ -192,31 +216,66 @@ class Store:
         # collection -> key tuple -> digest of the declared fields
         self.keys: dict[str, dict[tuple, str]] = {}
         self.counts: Counter = Counter()
-        self.signals = 0
+        self.last_id: Counter = Counter()        # collection -> the highest `_id` given so far
+        self.signals = self.changes = 0
         for name in self.schema:
             self._load(name)
-        sig = root / "signals.jsonl"
-        if sig.exists():
-            with sig.open() as f:
-                self.signals = sum(1 for _ in f)
+        for attr in ("signals", "changes"):
+            log = root / f"{attr}.jsonl"
+            if log.exists():
+                with log.open() as f:
+                    setattr(self, attr, sum(1 for _ in f))
+        log = root / "changes.jsonl"
+        if log.exists():           # a deleted record's number is never given again
+            for line in log.read_text().splitlines():
+                try:
+                    entry = json.loads(line)
+                    self.last_id[entry["collection"]] = max(self.last_id[entry["collection"]], *entry["ids"])
+                except (ValueError, KeyError, TypeError):
+                    continue
 
     def _path(self, collection: str) -> Path:
         return self.root / f"{collection}.jsonl"
 
-    def _load(self, name: str) -> None:
-        self.keys[name] = {}
+    def _records(self, name: str):
         path = self._path(name)
         if not path.exists():
             return
         with path.open() as f:
             for line in f:
                 try:
-                    rec = json.loads(line)
+                    yield json.loads(line)
                 except ValueError:
                     continue   # a line cut short by a crash
-                self.counts[name] += 1
-                if key := self._key(name, rec):
-                    self.keys[name][key] = self._digest(name, rec)
+
+    def _rewrite(self, name: str, records: Iterable[dict]) -> None:
+        """Replace a collection's file in one step, so a reader sees the old file or the new one."""
+        tmp = self.root / f".{name}.jsonl.tmp"
+        with tmp.open("w") as out:
+            for rec in records:
+                out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        os.replace(tmp, self._path(name))
+
+    def _load(self, name: str) -> None:
+        self.keys[name] = {}
+        self.counts[name] = 0
+        unnumbered = False
+        for rec in self._records(name):
+            self.counts[name] += 1
+            if "_id" in rec:
+                self.last_id[name] = max(self.last_id[name], rec["_id"])
+            else:
+                unnumbered = True
+            if key := self._key(name, rec):
+                self.keys[name][key] = self._digest(name, rec)
+        if unnumbered:         # a store written before records were numbered
+            def numbered():
+                for rec in self._records(name):
+                    if "_id" not in rec:
+                        self.last_id[name] += 1
+                        rec = {**rec, "_id": self.last_id[name]}
+                    yield rec
+            self._rewrite(name, list(numbered()))
 
     def _key(self, name: str, rec: dict) -> tuple | None:
         key = self.schema[name].get("key") or []
@@ -267,7 +326,7 @@ class Store:
         spec = self.schema[collection]
         res = WriteResult()
         today = dt.datetime.now(dt.UTC).date()
-        now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = _now()
         with self.lock, self._path(collection).open("a") as out, (self.root / "signals.jsonl").open("a") as sig:
             for rec in records:
                 if isinstance(rec, dict):
@@ -280,7 +339,7 @@ class Store:
                     continue
                 key = self._key(collection, rec)
                 digest = self._digest(collection, rec)
-                stamped = rec | {"_by": agent, "_task": task, "_at": now}
+                stamped = rec | {"_id": self.last_id[collection] + 1, "_by": agent, "_task": task, "_at": now}
                 if key is not None and key in self.keys[collection]:
                     if self.keys[collection][key] == digest:
                         res.duplicates += 1
@@ -291,10 +350,95 @@ class Store:
                                               "not_stored": stamped}, ensure_ascii=False) + "\n")
                     continue
                 out.write(json.dumps(stamped, ensure_ascii=False) + "\n")
+                self.last_id[collection] += 1
                 if key is not None:
                     self.keys[collection][key] = digest
                 self.counts[collection] += 1
                 res.accepted += 1
+        return res
+
+    # --- corrections -----------------------------------------------------------------
+
+    def change(self, collection: str, agent: str, may_change: Callable[[dict], bool], reason: str,
+               ids: list | None = None, where: dict | None = None, new_values: dict | None = None) -> ChangeResult:
+        """Update (`new_values` given) or delete the records picked by `ids` or by `where`.
+
+        `where` maps a field to the value it must have; all must match. `may_change` says
+        whether the caller may touch a record. Everything is checked first: if any picked
+        record may not be changed, or any updated record would fail a gate, nothing changes.
+        """
+        spec = self.schema[collection]
+        res = ChangeResult()
+        action = "delete" if new_values is None else "update"
+        known = set(spec["fields"]) | set(UNIVERSAL)
+        if where is not None:
+            if unknown := sorted(set(where) - known - set(STAMPS)):
+                res.problems.append(f"`where` names fields the collection doesn't have: {', '.join(unknown)}")
+        if new_values is not None:
+            if unknown := sorted(set(new_values) - known):
+                res.problems.append(f"`set` names fields the collection doesn't declare: {', '.join(unknown)}")
+        if res.problems:
+            return res
+        wanted = set(ids) if ids is not None else None
+        target = {k: _norm(v) for k, v in (where or {}).items()}
+
+        def picked(rec: dict) -> bool:
+            if wanted is not None:
+                return rec.get("_id") in wanted
+            return all(_norm(rec.get(k)) == v for k, v in target.items())
+
+        today = dt.datetime.now(dt.UTC).date()
+        now = _now()
+        with self.lock:
+            hits = [rec for rec in self._records(collection) if picked(rec)]
+            if not hits:
+                res.problems.append("no stored record matches")
+                return res
+            if wanted is not None and (missing := sorted(wanted - {r["_id"] for r in hits})):
+                res.problems.append(f"there is no record with `_id` {', '.join(map(str, missing[:10]))}")
+            others = Counter(str(r.get("_task") or r.get("_by")) for r in hits if not may_change(r))
+            if others:
+                res.problems.append(
+                    f"{sum(others.values())} of the {len(hits)} matching records were written under other tasks "
+                    f"({', '.join(sorted(others))}). You can change records you wrote and records written by tasks "
+                    "you own; `lead` can change any. Ask with `send_message`.")
+            new: dict[int, dict] = {}
+            if action == "update" and not res.problems:
+                # keys held by the records that stay as they are
+                taken = dict(self.keys[collection])
+                for r in hits:
+                    taken.pop(self._key(collection, r), None)
+                seen: dict[tuple, int] = {}
+                for r in hits:
+                    body = {k: v for k, v in r.items() if k not in STAMPS} | new_values
+                    body = {k: v for k, v in body.items() if v is not None}
+                    if problem := record_problem(body, spec, today):
+                        res.problems.append(f"record {r['_id']}: {problem}")
+                        continue
+                    key = self._key(collection, body)
+                    if key is not None and (key in taken or key in seen):
+                        res.problems.append(f"record {r['_id']}: another record already has the key "
+                                            f"{', '.join(map(str, key))}")
+                        continue
+                    if key is not None:
+                        seen[key] = r["_id"]
+                    stamps = {k: r[k] for k in STAMPS if k in r}
+                    new[r["_id"]] = body | stamps | {"_edited_by": agent, "_edited_at": now}
+            if res.problems:
+                return res
+            gone = {r["_id"] for r in hits}
+            self._rewrite(collection, (new[r["_id"]] if r.get("_id") in new else r
+                                       for r in self._records(collection)
+                                       if action == "update" or r.get("_id") not in gone))
+            with (self.root / "changes.jsonl").open("a") as log:
+                entry = {"at": now, "by": agent, "collection": collection, "action": action,
+                         "ids": sorted(gone), "reason": reason}
+                if action == "update":
+                    entry["fields"] = sorted(new_values)
+                log.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            self.changes += 1
+            self._load(collection)
+            res.changed = len(hits)
         return res
 
     # --- what agents are shown -------------------------------------------------------

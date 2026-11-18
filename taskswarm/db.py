@@ -1,7 +1,7 @@
 """SQLite schema and access. One database per run, written only by the orchestrator.
 
 Everything a run needs to continue after a crash or a reboot is here: the plan, each
-task's state, every agent's conversation, and undelivered messages.
+task's state, every agent's conversation, undelivered messages, and the channels.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS agents (
     calls INTEGER NOT NULL DEFAULT 0,
     context_est INTEGER NOT NULL DEFAULT 0,   -- estimated prompt tokens of its next call
     api_failures INTEGER NOT NULL DEFAULT 0,
+    seen_post INTEGER NOT NULL DEFAULT 0,     -- the last channel post it has been shown
     created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS messages (
@@ -85,6 +86,18 @@ CREATE TABLE IF NOT EXISTS inbox (
     delivered INTEGER NOT NULL DEFAULT 0,
     created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS channels (
+    name TEXT PRIMARY KEY,             -- the theme, e.g. github-api
+    created_by TEXT NOT NULL,
+    created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS posts (
+    id INTEGER PRIMARY KEY,
+    channel TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
     agent TEXT,
@@ -105,10 +118,13 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        # runs made by an older version
         have = {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}
-        for column in ("parent", "decisions"):       # runs made by an older version
+        for column in ("parent", "decisions"):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")
+        if "seen_post" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(agents)")}:
+            self.conn.execute("ALTER TABLE agents ADD COLUMN seen_post INTEGER NOT NULL DEFAULT 0")
 
     # --- generic -------------------------------------------------------------------
 

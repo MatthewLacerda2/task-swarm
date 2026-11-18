@@ -92,7 +92,7 @@ async def test_each_role_runs_on_its_model(make_run):
     assert await orchestrator.execute(run) == "done"
     assert fake.models == {"planner": FABLE, "lead": OPUS, "a": SONNET, "a.review1": SONNET, "final.review1": OPUS}
     # the planner thinks harder and keeps a short cache; the team keeps its cache for an hour
-    assert fake.settings["planner"] == ("high", False) and fake.settings["a"] == ("medium", True)
+    assert fake.settings["planner"] == ("high", False) and fake.settings["a"] == ("high", True)
     # every call is billed at the prices of the model that made it
     rows = {r["agent"]: r["c"] for r in run.db.all("SELECT agent, SUM(cost) AS c FROM usage GROUP BY agent")}
     calls = {r["agent"]: r["n"] for r in run.db.all("SELECT agent, COUNT(*) AS n FROM usage GROUP BY agent")}

@@ -64,10 +64,22 @@ task ──> planner ──plan──> lead ──> tasks (a dependency graph) �
   with an undeclared field, a wrong type or no `source` and `retrieved` date is
   refused with the reason. Two records with the same key and different values are a
   conflict: the first is kept and both are logged as a signal.
+- **A stored record can be corrected or removed** (`store_update`, `store_delete`), by
+  the agent that wrote it or by the owner of its task; the lead can change any. The
+  corrected record passes the same checks, a change is applied whole or not at all,
+  and what was done to which records, by whom and why is logged in `changes.jsonl`.
+  The old content is not kept, so a record that should never have been stored is
+  really gone.
 - **Messages are direct and by name** (`send_message`), like Claude Code's
   SendMessage: to the lead or to a task's worker, and an agent that already handed
   in is woken with its memory intact to answer. Results don't travel by message;
   they go in reports and in the store.
+- **Channels carry tips between agents** (`post`, `taskswarm/channels.py`), like
+  Slack channels: each has a name by theme and a creation time, each post says who
+  wrote it and when, and a post is at most 1,000 characters. A worker that finds out
+  a site limits requests says so once, and the others are shown it with the result
+  of their next command. A post wakes nobody and changes no task. The store is for
+  what was found; a channel is for what helps the work along.
 - **The plan's rules are checks, not advice** (`taskswarm/plan.py`): a task without a
   way to verify it, a brief too short to stand alone, a dependency on a task that
   doesn't exist or a circle of dependencies is refused, and the refusal names every
@@ -114,9 +126,19 @@ uv run task-swarm status <run>
 uv run task-swarm transcript <run> lead        # or a task id, <task>.review1, final.review1
 uv run task-swarm resume <run> --budget 2      # after an interruption, or to add money
 uv run task-swarm list
+
+uv run task-swarm plan <run> > plan.json       # the plan a run started from
+uv run task-swarm run --plan plan.json "..."   # start from your own plan; no planner is called
 ```
 
 A run's exit code is 0 only when the final review passed.
+
+**Bringing your own plan.** `--plan` takes a JSON file with what the `plan` tool takes:
+`goal`, `done_when`, `collections` and `tasks` (each with `id`, `title`, `brief`,
+`verify`, `blocked_by`). It is checked like any plan; if a check fails the run does not
+start and every problem is listed. The lead owns it from the first minute and can
+still change it. This is the cheapest way to a good run: think the task through
+beforehand, with a model or without, and hand in the result.
 
 ## Where results go
 
@@ -124,8 +146,10 @@ Not in this repository. Each run has a folder under `~/.local/share/task-swarm/r
 (change it with `runs_root` in `taskswarm/config.local.toml` or `TASK_SWARM_RUNS`):
 
 ```
+<run>/README.md        what the run was and where everything is, written by the tool
 <run>/deliverable/     the file the lead handed in
-<run>/store/           <collection>.jsonl, schema.json, signals.jsonl
+<run>/store/           <collection>.jsonl, schema.json, signals.jsonl, changes.jsonl
+<run>/channels/        <channel>.jsonl: what agents told each other
 <run>/work/<agent>/    each agent's files
 <run>/outputs/         full output of every command
 <run>/run.db           the plan, tasks, conversations, costs
@@ -167,9 +191,13 @@ checking and parallel work.
   Opus 5.5 and Fable 5.2. Run for real so far: Haiku workers, a Haiku or Sonnet lead,
   an Opus planner. Opus or Fable as lead or worker, and Fable as planner (which
   needs a run budget of about US$ 2.20 or more), are covered by scripted tests only.
-- **Waiting is advice, not a check.** A lead is told to end its turn to wait; in one
-  run a Sonnet lead slept two minutes inside a command instead. Nothing broke, but
-  the run took longer.
+- **Waiting inside a command is refused, but only the plain case.** In one run a
+  Sonnet lead slept two minutes inside a command instead of ending its turn. Now a
+  command that sleeps 15 seconds or more is not run while its agent has tasks open.
+  A loop of short sleeps still gets through.
+- **What goes in a channel is advice, not a check.** The tool checks a post's size
+  and the channel's name; nothing stops an agent from posting a finding there
+  instead of in the store.
 
 ## Safety
 

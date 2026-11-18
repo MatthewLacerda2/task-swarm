@@ -43,6 +43,15 @@ async def test_plan_to_deliverable(make_run):
         "check.review1": "reviewer", "final.review1": "reviewer"}
     assert abs(run.db.total_spent() - sum(a["spent"] for a in run.db.agents())) < 1e-9
 
+    # the run's folder says what it is and where everything in it is
+    readme = (run.cfg.run_dir / "README.md").read_text()
+    assert "Status: done: the final review passed" in readme and "Find things." in readme
+    assert GOAL["goal"] in readme and GOAL["done_when"] in readme
+    assert "| `deliverable/answer.md` |" in readme and "| `store/companies.jsonl` | 1 records" in readme
+    assert "`employees` (integer, min 0)" in readme and "key: name" in readme
+    assert "- `find` (done): Task find\n  Found Acme; one had no source." in readme
+    assert "One maker found." in readme and "## What the final reviewer found" in readme
+
 
 async def test_failed_review_goes_back_to_the_worker(make_run):
     run, fake = make_run({
@@ -274,3 +283,65 @@ def test_no_environment_leaks_into_the_prompt():
     text = prompts.system_prompt(config.RunConfig(run_id="x"))
     assert "{" not in text and os.environ.get("USER", "nobody-here") not in text
     assert "stops for good at US$ 2.40" in text
+
+
+async def test_a_worker_corrects_its_records_after_a_failed_review(make_run):
+    """What went wrong in the first real run: wrong records could only be added to, never fixed."""
+    def reviewer(messages):
+        rows = [r for r in stored(run) if r["_task"] == "find"]
+        ok = [r["name"] for r in rows] == ["Acme"] and rows[0].get("employees") == 15
+        return [call("verdict", passed=ok, findings="Read the store: Bolt is a reseller and Acme has 15 employees.")]
+
+    run, fake = make_run({
+        "lead": lead_script(GOAL | {"collections": COLLECTIONS, "tasks": [task("find"), task("other", ["find"])]}),
+        "find": [
+            [call("store_write", collection="companies", records=[record("Acme", employees=12), record("Bolt")])],
+            [call("report", summary="Stored two makers.")],
+            [call("store_delete", collection="companies", where={"name": "Bolt"}, reason="Bolt resells, it is no maker"),
+             call("store_update", collection="companies", ids=[1], set={"employees": 15}, reason="the page says 15")],
+            [call("report", summary="Removed the reseller and corrected Acme.")],
+        ],
+        "find.review1": reviewer, "find.review2": reviewer,
+        "other": [
+            [call("store_write", collection="companies", records=[record("Coil")])],
+            [call("store_delete", collection="companies", where={"name": "Acme"}, reason="not mine, but I try"),
+             call("store_update", collection="companies", ids=[3], set={"kind": "maker"}),
+             call("store_update", collection="companies", ids=[3], where={"name": "Coil"}, set={"kind": "maker"},
+                  reason="both ways of picking"),
+             call("store_update", collection="companies", ids=[3], set={"kind": "maker"}, reason="it makes them")],
+            [call("report", summary="Stored Coil.")],
+        ],
+    })
+    assert await orchestrator.execute(run) == "done"
+    assert {r["name"]: r.get("employees") for r in stored(run)} == {"Acme": 15, "Coil": None}
+    find, other = "\n".join(fake.seen["find"]), "\n".join(fake.seen["other"])
+    assert "companies: 1 records deleted" in find and "companies: 1 records updated" in find
+    assert run.db.task("find")["attempts"] == 2 and run.store.changes == 3
+    # another task's records are not yours to change; a change needs a reason and one way of picking
+    assert "matching records were written under other tasks (find)" in other
+    assert "`reason` is missing" in other and "either `ids` or `where`, not both" in other
+    # the final reviewer is told corrections were made, and the run's README points at the log
+    assert "Corrections logged (records updated or deleted after they were stored): 3" in fake.seen["final.review1"][0]
+    assert "| `store/changes.jsonl` | 3 corrections" in (run.cfg.run_dir / "README.md").read_text()
+
+
+async def test_who_may_change_which_records(make_run):
+    run, fake = make_run({
+        "lead": lead_script(GOAL | {"collections": COLLECTIONS, "tasks": [task("find")]}, react=lambda last: (
+            [call("store_delete", collection="companies", where={"_task": "find"}, reason="the lead may remove any"),
+             call("send_message", to="find", message="I removed your record; anything to add?")]
+            if "No task is running" in last and len(stored(run)) == 1
+            else [bash(DELIVER)] if "Sent to `find`" in last else None)),
+        "find": [
+            [call("store_write", collection="companies", records=[record("Acme")])],
+            [call("report", summary="Stored Acme.")],
+            # woken after handing in: its records are no longer its to change
+            [call("store_update", collection="companies", ids=[1], set={"employees": 1}, reason="a late thought")],
+        ],
+        "find.review1": [[call("store_delete", collection="companies", ids=[1], reason="a reviewer fixing things")],
+                         [call("verdict", passed=True, findings="Opened the record and its source.")]],
+    })
+    assert await orchestrator.execute(run) == "done"
+    assert stored(run) == []
+    assert "`store_delete` is not for your role (reviewer)" in "\n".join(fake.seen["find.review1"])
+    assert "Your task is handed in" in "\n".join(fake.seen["find"])

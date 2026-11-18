@@ -10,7 +10,7 @@ from . import config, llm
 from .db import DB
 from .store import Store
 
-FOLDERS = ("work", "store", "deliverable", "outputs", "sys")
+FOLDERS = ("work", "store", "channels", "deliverable", "outputs", "sys")
 
 
 @dataclass
@@ -51,7 +51,7 @@ class Run:
 
 def open_run(cfg: config.RunConfig, client: llm.LLM, task: str | None = None) -> Run:
     """Open or create a run. The config is stored at creation and reused on resume."""
-    from . import prompts
+    from . import channels, prompts
 
     for name in FOLDERS:
         (cfg.run_dir / name).mkdir(parents=True, exist_ok=True)
@@ -69,12 +69,14 @@ def open_run(cfg: config.RunConfig, client: llm.LLM, task: str | None = None) ->
         db.set_meta("status", "new")
     else:
         cfg = config.RunConfig.from_dict(stored)
-    return Run(
+    run = Run(
         cfg=cfg, db=db, budget=llm.Budget(db, cfg), llm=client,
         system=llm.system_blocks(prompts.system_prompt(cfg)),
         store=Store(cfg.run_dir / "store"),
         semaphore=asyncio.Semaphore(cfg.concurrency),
     )
+    channels.sync(run)
+    return run
 
 
 def work_dir(run: Run, agent: str):
