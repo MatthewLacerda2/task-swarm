@@ -93,7 +93,7 @@ class RunConfig:
     lead_model: str = "claude-haiku-5-5"
     worker_model: str = "claude-haiku-5-5"
     plan_effort: str = "high"
-    effort: str = "medium"           # the lead's, the workers' and the reviewers'
+    effort: str = "high"             # the lead's, the workers' and the reviewers'
     planner_budget: float = 0.60
     plan_max_calls: int = 6
     # Budgets (US$). At run_budget the wind-down starts: no new task starts and the lead
@@ -111,6 +111,9 @@ class RunConfig:
     max_attempts: int = 3            # reports a worker gets reviewed before its task fails
     max_final_reviews: int = 2
     summary_chars: int = 4_000       # a report's summary: what the lead carries in its context
+    # Channels
+    post_chars: int = 1_000          # one post
+    max_channels: int = 12           # in the whole run
     # Calls
     concurrency: int = 8
     max_tokens: int = 12_000

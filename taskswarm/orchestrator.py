@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from . import config, plan, prompts
+from . import config, plan, prompts, readme
 from .agent import run_agent
 from .db import OPEN
 from .handlers import Outcome
@@ -59,7 +59,7 @@ class Orchestrator:
         elif self._use_planner():
             self._start("planner", self._planner_job())
         else:
-            self._start_lead(planned=False)
+            self._start_lead(planned=bool(db.get_meta("goal")))      # a plan the user gave is already set
         try:
             while True:
                 run.wake.clear()
@@ -398,7 +398,12 @@ class Orchestrator:
 
 
 async def execute(run: Run) -> str:
-    return await Orchestrator(run).run_until_done()
+    """Run until the work is done or can't go on. The run folder's README is current when it returns."""
+    readme.write(run)
+    try:
+        return await Orchestrator(run).run_until_done()
+    finally:
+        readme.write(run)
 
 
 def summary(run: Run) -> dict:

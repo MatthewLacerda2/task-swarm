@@ -80,6 +80,24 @@ TOOLS = [
         },
     },
     {
+        "name": "post",
+        "description": (
+            "Post a short note to a channel, for the other agents: something you learned that saves them time or "
+            "a mistake (a site that blocks or limits requests, a source that works, a trap in the data). A channel "
+            "is named by its theme; posting to a name that doesn't exist creates it. The others see it with the "
+            "result of their next command. A post wakes nobody and changes no task: a question or a decision goes "
+            "by `send_message`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "description": "The theme, e.g. `github-api`: a-z, 0-9 and -."},
+                "text": {"type": "string", "description": "Brief: one or two sentences is usually enough."},
+            },
+            "required": ["channel", "text"],
+        },
+    },
+    {
         "name": "store_write",
         "description": (
             "Add records to a store collection. Give `records` (a list of objects) for a few, or `path` to a JSON "
@@ -95,6 +113,48 @@ TOOLS = [
                 "path": {"type": "string"},
             },
             "required": ["collection"],
+        },
+    },
+    {
+        "name": "store_update",
+        "description": (
+            "Correct stored records: set new values for some fields of the records picked by `ids` or by `where`. "
+            "The corrected records must pass the same checks as new ones. If any of them doesn't, or isn't yours "
+            "to change, nothing changes and you are told why."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string"},
+                "ids": {"type": "array", "items": {"type": "integer"},
+                        "description": "The `_id` of each record, as stored."},
+                "where": {"type": "object",
+                          "description": "Field values a record must have, all of them, e.g. {\"shop\": \"Acme\"}. "
+                                         "Stamps work too: {\"_task\": \"prices\"}."},
+                "reason": {"type": "string", "description": "Why, in a sentence. It is logged."},
+                "set": {"type": "object", "description": "Field -> new value. null removes an optional field."},
+            },
+            "required": ["collection", "set", "reason"],
+        },
+    },
+    {
+        "name": "store_delete",
+        "description": (
+            "Remove stored records, picked by `ids` or by `where`: records that are wrong, or that should never "
+            "have been stored. If any of them isn't yours to change, nothing is removed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string"},
+                "ids": {"type": "array", "items": {"type": "integer"},
+                        "description": "The `_id` of each record, as stored."},
+                "where": {"type": "object",
+                          "description": "Field values a record must have, all of them, e.g. {\"shop\": \"Acme\"}. "
+                                         "Stamps work too: {\"_task\": \"prices\"}."},
+                "reason": {"type": "string", "description": "Why, in a sentence. It is logged."},
+            },
+            "required": ["collection", "reason"],
         },
     },
     {
@@ -151,7 +211,7 @@ TOOLS = [
 
 ALLOWED = {
     "planner": {"bash", "plan"},
-    "lead": {"bash", "plan", "send_message", "store_write", "finish"},
-    "worker": {"bash", "plan", "send_message", "store_write", "report"},
-    "reviewer": {"bash", "send_message", "verdict"},
+    "lead": {"bash", "plan", "send_message", "post", "store_write", "store_update", "store_delete", "finish"},
+    "worker": {"bash", "plan", "send_message", "post", "store_write", "store_update", "store_delete", "report"},
+    "reviewer": {"bash", "send_message", "post", "verdict"},
 }

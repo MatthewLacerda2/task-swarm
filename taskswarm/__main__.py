@@ -23,12 +23,13 @@ def _apply(cfg: config.RunConfig, overrides: list[str] | None) -> None:
 
 
 def _execute(run) -> int:
-    from . import orchestrator, status
+    from . import orchestrator, readme, status
 
     try:
         asyncio.run(orchestrator.execute(run))
     except KeyboardInterrupt:
         run.db.set_meta("status", "interrupted")
+        readme.write(run)
         print(f"\ninterrupted; continue with: task-swarm resume {run.cfg.run_id}")
         return 130
     print()
@@ -61,8 +62,22 @@ def cmd_run(args) -> int:
         cfg.run_budget = args.budget
     _apply(cfg, args.set)
     run = runmod.open_run(cfg, llm.AnthropicLLM(config.read_api_key()), task)
+    if args.plan:
+        from . import plan
+
+        try:
+            given = json.loads(Path(args.plan).read_text())
+        except (OSError, ValueError) as e:
+            given = f"can't read it as JSON: {e}"
+        ok, text = plan.give(run, given) if not isinstance(given, str) else (False, given)
+        if not ok:
+            run.db.conn.close()
+            runmod.delete_run(cfg)
+            raise SystemExit(f"The plan in {args.plan} can't be used, so the run did not start.\n{text}")
     print(f"run {run_id} in {cfg.run_dir}")
     planner = cfg.plan_model if cfg.planner_fits() else "none (the lead plans)"
+    if args.plan:
+        planner = f"none (the plan was given: {args.plan})"
     print(f"  planner {planner}, lead {cfg.lead_model}, workers {cfg.worker_model}", flush=True)
     print(f"  budget US$ {cfg.run_budget:.2f} (hard stop {cfg.hard_stop:.2f}); caps: lead {cfg.lead_budget:.2f}, "
           f"each worker or reviewer {cfg.agent_budget:.2f}, each task with its sub-team {cfg.task_budget:.2f}")
@@ -94,6 +109,13 @@ def cmd_status(args) -> int:
     from . import status
 
     print(status.render(args.run_id))
+    return 0
+
+
+def cmd_plan(args) -> int:
+    from . import status
+
+    print(json.dumps(status.first_plan(args.run_id), indent=2, ensure_ascii=False))
     return 0
 
 
@@ -136,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--worker", metavar="MODEL", help=f"who does and reviews the tasks: {models} (default haiku). "
                                                      "No one hands work to a stronger model than its own")
     p.add_argument("--data", metavar="DIR", help="a folder of yours every agent can read at /task/data")
+    p.add_argument("--plan", metavar="FILE", help="start from your own plan (JSON: goal, done_when, collections, "
+                                                  "tasks) instead of having one drafted; see `task-swarm plan`")
     p.add_argument("--set", nargs="*", metavar="KEY=VALUE", help="override a RunConfig value, e.g. max_parallel=2")
     p.set_defaults(func=cmd_run)
 
@@ -148,6 +172,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("status", help="where a run stands")
     p.add_argument("run_id")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("plan", help="print the plan a run started from, as JSON that `run --plan` accepts")
+    p.add_argument("run_id")
+    p.set_defaults(func=cmd_plan)
 
     p = sub.add_parser("transcript", help="one agent's conversation, readable")
     p.add_argument("run_id")

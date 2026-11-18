@@ -31,6 +31,7 @@ def run_cfg(tmp_path, monkeypatch):
         (cfg.run_dir / "work" / agent).mkdir()
     (cfg.run_dir / "work" / "agent-002" / "secret.txt").write_text("other agent's file\n")
     (cfg.run_dir / "store" / "companies.jsonl").write_text("{}\n")
+    (cfg.run_dir / "channels" / "tips.jsonl").write_text("{}\n")
     (cfg.run_dir / "run.db").write_text("the orchestrator's database\n")
     return cfg
 
@@ -94,7 +95,7 @@ async def test_users_data_folder_is_read_only(run_cfg, tmp_path):
 
 async def test_only_the_shared_folders_are_there(sb):
     res = await sh(sb, "ls /task")
-    assert set(res.output.split()) <= {"bin", "deliverable", "outputs", "store", "tools", "work"}
+    assert set(res.output.split()) <= {"bin", "channels", "deliverable", "outputs", "store", "tools", "work"}
     assert (await sh(sb, "cat /task/run.db 2>&1")).exit_code != 0
 
 
@@ -105,6 +106,7 @@ async def test_only_the_shared_folders_are_there(sb):
     "/usr/x", "/etc/x", "/var/tmp/x", "/opt/x", "/x", "/home/x", "/mnt/x",
     "/task/x", "/task/bin/x", "/task/tools/x", "/task/outputs/x", "/task/deliverable/x",
     "/task/store/x", "/task/store/companies.jsonl", "/task/store/schema.json",
+    "/task/channels/x", "/task/channels/tips.jsonl",
     "/task/work/x", "/task/work/agent-002/x", "/task/work/agent-002/secret.txt",
 ])
 async def test_cannot_write_outside(sb, target):
