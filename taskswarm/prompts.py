@@ -40,6 +40,61 @@ def compacted_note(agent: str, role: str) -> str:
     )
 
 
+HAND_IN = {      # per role: the tool that hands in, and where what is missing goes
+    "worker": "call `report` with what you have, and put the rest under `not_done`",
+    "reviewer": "call `verdict` on what you have checked, and say in `findings` what you could not check",
+    "planner": "call `plan` with the plan as it is",
+    "lead": "end your turn if you are waiting for tasks, or write the deliverable and call `finish`",
+}
+
+
+def calls_notice(role: str, used: int, limit: int, mark: int) -> str:
+    """Told to an agent as its calls for the assignment run down. At `limit` it is stopped."""
+    left = limit - used
+    calls = "1 call" if left == 1 else f"{left} calls"
+    what = "the run fails" if role == "lead" else "you are stopped and work that was not handed in is lost"
+    if mark >= 95:
+        return f"{calls} left of {limit}. Hand in now: {HAND_IN[role]}."
+    if mark > 80:
+        return f"{used} of your {limit} calls are used, {calls} left. Hand in before they run out."
+    return (f"You have used {used} of the {limit} model calls you have for this "
+            f"{'turn' if role == 'lead' else 'assignment'}. At {limit}, {what}. Spend the {calls} left on "
+            f"the part that is worth most and can still be finished, then {HAND_IN[role]}.")
+
+
+def _budget(run: Run) -> str:
+    cfg = run.cfg
+    return f"US$ {run.budget.spent:.2f} of the run's budget of US$ {cfg.run_budget:.2f}"
+
+
+WORTH_MOST = ("Put what is left where it is worth most: the part of your task that matters most to the goal and "
+              "can still be finished, even if a smaller part is closer to done. Drop the rest and list it under "
+              "`not_done`.")
+
+
+def budget_notice_lead(run: Run, mark: int) -> str:
+    cfg = run.cfg
+    if mark >= 100:
+        return (f"The run's budget of US$ {cfg.run_budget:.2f} is used up. No new task will start; tasks "
+                "that never started are dropped when you finish. Write the deliverable with what "
+                f"exists and call `finish`. The run stops for good at US$ {cfg.hard_stop:.2f}.")
+    if mark > 80:
+        return f"Run budget: {mark}% used ({_budget(run)})."
+    return (f"Run budget: {mark}% used ({_budget(run)}). Put what is left where it is worth most: if not "
+            "everything will fit, cancel the tasks that matter least to the goal so that the ones that "
+            "matter most can finish. The workers have been told to do the same inside their tasks.")
+
+
+def budget_notice_worker(run: Run, mark: int) -> str:
+    cfg = run.cfg
+    if mark >= 100:
+        return (f"The run's budget of US$ {cfg.run_budget:.2f} is used up, and the run stops for good at "
+                f"US$ {cfg.hard_stop:.2f}. Hand in now: {HAND_IN['worker']}.")
+    if mark > 80:
+        return f"Run budget: {mark}% used ({_budget(run)})."
+    return f"Run budget: {mark}% used ({_budget(run)}). {WORTH_MOST}"
+
+
 def planner_first(task: str) -> str:
     return f"{identity('planner', 'planner')}\n\n# The task\n\n{task}"
 
@@ -102,6 +157,8 @@ def worker_first(run: Run, task) -> str:
                          f"Its files are in /task/work/{b['id']}/.")
         parts.append("\n\n".join(lines))
     parts.append(_store(run))
+    if run.budget.percent >= config.NOTICES[0] and not run.budget.winding_down:
+        parts.append(f"The run has used {_budget(run)}. {WORTH_MOST}")
     return "\n\n".join(parts)
 
 

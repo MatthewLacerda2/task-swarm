@@ -79,7 +79,14 @@ def worst_call(model: str, max_tokens: int, prompt_tokens: int = 8_000) -> float
     return (prompt_tokens * p.cache_write_1h + max_tokens * p.output) / 1_000_000 * 1.2
 
 
-LEAD_NOTICES = (50, 80, 100)   # % of the run budget at which the lead is told
+# % of a limit (the run's budget, an agent's calls) at which whoever is spending it is told:
+# at 80%, then every 5%, then every 1% from 95%.
+NOTICES = (80, 85, 90, 95, 96, 97, 98, 99, 100)
+
+
+def notice_mark(before: float, now: float) -> int | None:
+    """The highest notice mark passed on the way from `before` to `now` percent, if any."""
+    return max((t for t in NOTICES if before < t <= now), default=None)
 
 
 @dataclass

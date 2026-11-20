@@ -126,6 +126,7 @@ async def _loop(run: Run, agent: str, text: str, closed: bool, box: _Box) -> Out
     db.add_message(agent, "user", content)
 
     nudges = cut_off = calls = 0
+    limit = cfg.plan_max_calls if role == "planner" else cfg.max_calls      # for this assignment; a hard stop
     seq = db.one("SELECT COUNT(*) AS n FROM commands WHERE agent = ?", (agent,))["n"]
     while True:
         if est >= cfg.compaction_trigger:
@@ -138,7 +139,7 @@ async def _loop(run: Run, agent: str, text: str, closed: bool, box: _Box) -> Out
         if est > cfg.refuse_above:
             db.event(agent, "stopped", {"reason": "context", "estimate": est})
             return Outcome("failed", reason="context")
-        if calls >= (cfg.plan_max_calls if role == "planner" else cfg.max_calls):
+        if calls >= limit:
             db.event(agent, "stopped", {"reason": "calls"})
             return Outcome("failed", reason="calls")
 
@@ -146,6 +147,8 @@ async def _loop(run: Run, agent: str, text: str, closed: bool, box: _Box) -> Out
         if resp is None:
             return Outcome("failed", reason=why)
         calls += 1
+        mark = config.notice_mark(100 * (calls - 1) / limit, 100 * calls / limit)
+        running_low = [prompts.calls_notice(role, calls, limit, mark)] if mark and calls < limit and not closed else []
         messages.append({"role": "assistant", "content": resp.content})
         db.add_message(agent, "assistant", resp.content)
         est = resp.usage.prompt_tokens + resp.usage.output_tokens
@@ -177,7 +180,7 @@ async def _loop(run: Run, agent: str, text: str, closed: bool, box: _Box) -> Out
                     return Outcome("idle")
                 db.event(agent, "stopped", {"reason": "silent"})
                 return Outcome("failed", reason="silent")
-            blocks = [_text_block(t) for t in ([note] if note else []) + mail]
+            blocks = [_text_block(t) for t in ([note] if note else []) + running_low + mail]
             messages.append({"role": "user", "content": blocks})
             db.add_message(agent, "user", blocks)
             est += sum(llm.estimate_tokens(b["text"]) for b in blocks)
@@ -198,7 +201,8 @@ async def _loop(run: Run, agent: str, text: str, closed: bool, box: _Box) -> Out
             else:
                 out, err, outcome = await handlers.handle(run, agent, closed, tu["name"], tu.get("input"))
             results.append(_tool_result(tu["id"], out, err))
-        blocks = results + ([] if outcome else [_text_block(t) for t in _mail(run, agent) + _news(run, agent)])
+        blocks = results + ([] if outcome else
+                            [_text_block(t) for t in running_low + _mail(run, agent) + _news(run, agent)])
         messages.append({"role": "user", "content": blocks})
         db.add_message(agent, "user", blocks)
         est += sum(llm.estimate_tokens(b.get("content") or b.get("text") or "") for b in blocks)
@@ -245,7 +249,10 @@ async def _call(run: Run, agent: str, messages: list[dict], est: int) -> tuple[l
         run.budget.release(res)
         run.db.event(agent, "api_error", {"type": type(e).__name__, "message": str(e)[:2000]})
         return None, "api_error"
+    before = run.budget.percent
     run.budget.settle(res, resp.usage.cost)
+    if config.notice_mark(before, run.budget.percent):
+        run.wake.set()                  # a budget mark was passed: those who are told hear it now
     _record_usage(run, agent, resp)
     return resp, ""
 

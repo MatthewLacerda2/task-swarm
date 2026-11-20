@@ -112,6 +112,10 @@ Under it, reused from [swarm](https://github.com/MatthewLacerda2/swarm):
   can't overspend. At the run budget no new task starts and the lead is asked to
   deliver; at the hard stop (1.2 x) the run pauses and can be resumed with more.
   Each agent has its own cap, and so does each top-level task with everything under it.
+- **Limits are announced.** The lead and the workers at work are told when 80% of the
+  run budget is used, then at every 5%, then at every 1% from 95%, and asked to put
+  what is left where it is worth most. An agent gets the same notices about its own
+  calls for one assignment (150 by default); at the limit it is stopped at once.
 - **Cost:** every agent shares one cached prompt, whatever its role, and
   conversations are compacted before they reach the 100k-token price tier.
 - **Resumable:** all state is in SQLite and plain files, written before each next

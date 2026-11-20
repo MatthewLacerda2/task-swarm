@@ -353,3 +353,58 @@ async def test_who_may_change_which_records(make_run):
     assert stored(run) == []
     assert "`store_delete` is not for your role (reviewer)" in "\n".join(fake.seen["find.review1"])
     assert "Your task is handed in" in "\n".join(fake.seen["find"])
+
+
+async def test_agent_is_warned_as_its_calls_run_down_and_stopped_at_the_limit(make_run):
+    def heeds(messages):
+        if "Hand in now" in texts_of(messages[-1]):
+            return [call("report", summary="What I had by then.")]
+        return [bash("true")]
+
+    run, fake = make_run({
+        "lead": lead_script(GOAL | {"tasks": [task("a"), task("b")]}),
+        "a": heeds,
+        "b": lambda messages: [bash("true")],
+    }, max_calls=20)
+    assert await orchestrator.execute(run) == "done"
+    # told at 80%, then every 5%, then every 1% from 95%: with 20 calls, after calls 16, 17, 18 and 19
+    for name in ("a", "b"):
+        seen = fake.seen[name]
+        assert sum("You have used 16 of the 20 model calls" in t and "worth most" in t for t in seen) == 1
+        assert sum("17 of your 20 calls are used, 3 calls left" in t for t in seen) == 1
+        assert sum("18 of your 20 calls are used" in t for t in seen) == 1
+        assert sum("1 call left of 20. Hand in now: call `report`" in t for t in seen) == 1
+        assert not any("15 of" in t for t in seen) and fake.calls.count(name) == 20
+    # the one that handed in on its last call is done; the one that went on is stopped, with no call 21
+    assert run.db.task("a")["status"] == "done" and run.db.task("a")["summary"] == "What I had by then."
+    assert run.db.task("b")["status"] == "failed" and "used all its calls" in run.db.task("b")["findings"]
+
+
+def test_notice_marks():
+    assert config.NOTICES == (80, 85, 90, 95, 96, 97, 98, 99, 100)
+    assert config.notice_mark(0, 79.9) is None and config.notice_mark(79.9, 80) == 80
+    assert config.notice_mark(80, 84.9) is None and config.notice_mark(80, 85) == 85
+    assert config.notice_mark(94, 97.5) == 97          # several passed at once: one notice, the highest
+    assert config.notice_mark(99, 130) == 100 and config.notice_mark(100, 130) is None
+
+
+async def test_budget_running_down_is_told_to_the_lead_and_the_workers_not_the_reviewers(make_run):
+    def a(messages):
+        if "is used up" in texts_of(messages[-1]):
+            return [call("report", summary="The part that mattered most.")]
+        return [bash("true")]
+
+    # every call costs about a tenth of the budget
+    run, fake = make_run({"lead": lead_script(GOAL | {"tasks": [task("a")]}), "a": a},
+                         output_tokens=20_000, run_budget=0.10, hard_stop_ratio=4.0)
+    assert await orchestrator.execute(run) in ("done", "done_unverified")
+    worker_saw, lead_saw = fake.seen["a"], fake.seen["lead"]
+    assert any("Run budget: 80% used (US$ 0.08 of the run's budget of US$ 0.10)" in t
+               and "worth most" in t and "even if a smaller part is closer to done" in t for t in worker_saw)
+    assert any("Run budget: 90% used" in t for t in worker_saw)
+    assert any("budget of US$ 0.10 is used up" in t and "Hand in now: call `report`" in t for t in worker_saw)
+    assert any("Run budget: 80% used" in t and "cancel the tasks that matter least" in t for t in lead_saw)
+    assert any("is used up" in t and "stops for good at US$ 0.40" in t for t in lead_saw)
+    assert not any("Run budget" in t or "used up" in t for t in fake.seen["a.review1"])
+    assert run.db.task("a")["summary"] == "The part that mattered most."
+

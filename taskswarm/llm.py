@@ -168,13 +168,13 @@ class Budget:
     def release(self, res: Reservation) -> None:
         self.reserved -= res.amount
 
-    def crossed(self) -> list[int]:
-        """Lead notices crossed since the last call; remembered in the database."""
+    def crossed(self) -> int | None:
+        """The highest notice mark passed since the last call, if any; remembered in the database."""
         done = set(self.db.get_meta("notices_sent", []))
-        new = [t for t in config.LEAD_NOTICES if self.percent >= t and t not in done]
+        new = [t for t in config.NOTICES if self.percent >= t and t not in done]
         if new:
             self.db.set_meta("notices_sent", sorted(done | set(new)))
-        return new
+        return max(new, default=None)
 
 
 # --- the model call ----------------------------------------------------------------------

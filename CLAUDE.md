@@ -57,6 +57,12 @@ what it does and how to run it.
   `_final_job`); a new one takes over, with the earlier findings, only when it can't
   continue. A new reviewer starting over finds a different list of small problems each
   time, and work whose substance is right runs out of attempts (seen in a real run).
+- **A limit is announced before it stops anyone.** One schedule (`config.NOTICES`: 80%,
+  every 5%, every 1% from 95%) serves the run's budget and an agent's calls for one
+  assignment. The budget is told to the lead and to the workers at work, never to
+  reviewers: a review is not cut short for money. The calls limit is told to whoever is
+  spending it and is a hard stop. Without the notices, workers spent every call on
+  useful work and never handed any of it in (seen in a real run).
 - **The store is corrected in the store.** A wrong record is updated or deleted
   (`Store.change`), never left in place with the right version kept in a file. Who
   may change a record follows who owns the task that wrote it; every change is

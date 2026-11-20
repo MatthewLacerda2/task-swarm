@@ -110,8 +110,8 @@ Channels are where agents tell each other what they learned while working: a sit
 
 # Limits
 
-- Every model call costs money: for a worker or a reviewer roughly US$ {call_low} to {call_high}, more as the conversation grows. The lead has US$ {lead_budget:.2f}; every worker and reviewer has US$ {agent_budget:.2f} and at most {max_calls} calls for its assignment. An agent that runs out is stopped and its task fails.
-- The run has a budget of US$ {run_budget:.2f}. When it is used up, no new task starts and the lead is asked to deliver with what exists. The run stops for good at US$ {hard_stop:.2f}.
+- Every model call costs money: for a worker or a reviewer roughly US$ {call_low} to {call_high}, more as the conversation grows. The lead has US$ {lead_budget:.2f}; every worker and reviewer has US$ {agent_budget:.2f} and at most {max_calls} calls for its assignment. An agent that runs out is stopped at once and its task fails: what was not handed in is lost. You are told when 80% of your calls are used, then at every 5%, then at every 1% from 95%; hand in before the last one.
+- The run has a budget of US$ {run_budget:.2f}. The lead and the workers are told when 80% of it is used, then at every 5%, then at every 1% from 95%. When it is used up, no new task starts, workers are asked to hand in and the lead to deliver with what exists. The run stops for good at US$ {hard_stop:.2f}.
 - Each reply can be at most {max_tokens:,} tokens, including your thinking. A command cut off by that limit is not run, so write long files in several pieces.
 - Command output shown to you is cut to the last {output_chars:,} characters. Commands time out after {command_timeout} seconds. Your terminal has {sandbox_memory_gb} GB of RAM and {sandbox_cpus} CPU cores.
 - Your memory is limited. At about {compaction_trigger:,} tokens your conversation is compacted into a summary, and details that are not in the summary are lost. Keep what matters in files and in the store.

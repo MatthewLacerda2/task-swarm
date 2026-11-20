@@ -161,19 +161,21 @@ class Orchestrator:
     # --- what can start ----------------------------------------------------------------
 
     def _notices(self) -> None:
-        run, cfg = self.run, self.run.cfg
+        run = self.run
         if self.db.agent("lead") is None:
             return
-        for pct in run.budget.crossed():
-            if pct >= 100:
-                run.send("lead", "system",
-                         f"The run's budget of US$ {cfg.run_budget:.2f} is used up. No new task will start; tasks "
-                         "that never started are dropped when you finish. Write the deliverable with what "
-                         f"exists and call `finish`. The run stops for good at US$ {cfg.hard_stop:.2f}.")
-                self.db.event(None, "wind_down", {"spent": run.budget.spent})
-                self._wind_down_teams()
-            else:
-                run.send("lead", "system", f"Run budget: {pct}% of US$ {cfg.run_budget:.2f} used.", quiet=True)
+        mark = run.budget.crossed()
+        if mark is None:
+            return
+        # The lead and the workers at work are told; reviewers are not, a review is not cut short.
+        run.send("lead", "system", prompts.budget_notice_lead(run, mark), quiet=mark < 100)
+        for name in run.active:
+            row, task = self.db.agent(name), self.db.task(name)
+            if row["role"] == "worker" and task is not None and task["status"] == "running":
+                run.send(name, "system", prompts.budget_notice_worker(run, mark), quiet=True)
+        if mark >= 100:
+            self.db.event(None, "wind_down", {"spent": run.budget.spent})
+            self._wind_down_teams()
 
     def _wind_down_teams(self) -> None:
         """The budget is used up: sub-tasks that never started are dropped and their owners told."""
