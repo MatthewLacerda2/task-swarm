@@ -114,7 +114,7 @@ def test_pieces_start_only_while_their_task_is_at_work(make_run):
 
 
 async def test_a_failed_task_takes_its_pieces_with_it(make_run):
-    no = [[call("verdict", passed=False, findings="The whole does not hold together at all.")]]
+    no = [[call("verdict", result="fail", findings="The whole does not hold together at all.")]]
     run, fake = make_run({
         "lead": lead_script(GOAL | {"tasks": [task("big")]}),
         # hands in before a slow piece is cancelled: cancel it, hand in, fail review

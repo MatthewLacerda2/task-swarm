@@ -34,7 +34,7 @@ def _execute(run) -> int:
         return 130
     print()
     print(status.render(run.cfg.run_id))
-    return 0 if run.db.get_meta("status") == "done" else 1
+    return 0 if run.db.get_meta("status") in ("done", "done_with_gaps") else 1
 
 
 def cmd_run(args) -> int:

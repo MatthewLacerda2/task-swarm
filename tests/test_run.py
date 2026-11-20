@@ -61,13 +61,18 @@ async def test_failed_review_goes_back_to_the_worker(make_run):
             [call("store_write", collection="companies", records=[record("Acme")])],
             [call("report", summary="Now stored Acme.")],
         ],
-        "find.review1": [[call("verdict", passed=False, findings="The store is empty: nothing was written.")]],
+        "find.review1": [[call("verdict", result="fail", findings="The store is empty: nothing was written.")],
+                         [call("verdict", result="pass", findings="Fixed: Acme is stored, and its page names it.")]],
     })
     assert await orchestrator.execute(run) == "done"
     t = run.db.task("find")
     assert t["status"] == "done" and t["attempts"] == 2 and t["summary"] == "Now stored Acme."
-    assert any("The store is empty" in x and "report 1 of at most 3" in x for x in fake.seen["find"])
-    assert "find.review2" in fake.seen and "review 2 of at most 3" in fake.seen["find.review2"][0]
+    assert any("The store is empty" in x and "failed review 1 of at most 3" in x for x in fake.seen["find"])
+    # the reviewer that made the finding checks the fix; no second reviewer starts over
+    assert "find.review2" not in fake.seen and (t["reviewer"], t["fails"]) == ("find.review1", 1)
+    again = fake.seen["find.review1"][1]
+    assert "handed in again" in again and "review 2 of this task" in again and "Now stored Acme." in again
+    assert "don't start the review over" in again
 
 
 async def test_task_that_never_passes_fails_and_the_lead_replans(make_run):
@@ -78,14 +83,15 @@ async def test_task_that_never_passes_fails_and_the_lead_replans(make_run):
             assert "Can never start because of a failed task: check" in last
             return [call("plan", cancel=["check"], tasks=[task("find2")])]
 
-    no = [[call("verdict", passed=False, findings="Still nothing stored, as before.")]]
+    no = [[call("verdict", result="fail", findings="Still nothing stored, as before.")]]
     run, fake = make_run({
         "lead": lead_script(plan_input, react=react),
         "find": [[call("report", summary=f"Try {n}.")] for n in range(1, 5)],
-        "find.review1": no, "find.review2": no,
+        "find.review1": no * 2,
         "find2": worker(record("Acme")),
     }, max_attempts=2)
     assert await orchestrator.execute(run) == "done"
+    assert run.db.task("find")["fails"] == 2 and "find.review2" not in fake.seen
     assert orchestrator.summary(run)["tasks"] == {"find": "failed", "check": "cancelled", "find2": "done"}
     assert "check" not in fake.seen
 
@@ -95,14 +101,14 @@ async def test_roles_are_enforced(make_run):
         "lead": lead_script(GOAL | {"tasks": [task("find")]}),
         "find": [
             [call("plan", goal="mine now", done_when="never", tasks=[])],
-            [call("verdict", passed=True, findings="I pass myself, it is all fine.")],
+            [call("verdict", result="pass", findings="I pass myself, it is all fine.")],
             [call("finish", path="x", summary="done")],
             [call("report", summary="Did my own task.")],
         ],
         "find.review1": [
             [call("report", summary="I am the worker now.")],
             [call("store_write", collection="companies", records=[])],
-            [call("verdict", passed=True, findings="Checked the report against the brief.")],
+            [call("verdict", result="pass", findings="Checked the report against the brief.")],
         ],
     })
     assert await orchestrator.execute(run) == "done"
@@ -262,18 +268,20 @@ async def test_final_review_can_send_the_lead_back(make_run):
     run, fake = make_run({
         "lead": lead_script(GOAL | {"tasks": [task("a")]}),
         "a": worker(),
-        "final.review1": [[call("verdict", passed=False, findings="The deliverable names no source at all.")]],
+        "final.review1": [[call("verdict", result="fail", findings="The deliverable names no source at all.")],
+                          [call("verdict", result="pass", findings="It names the source of each claim now.")]],
     })
     assert await orchestrator.execute(run) == "done"
-    assert run.db.get_meta("final_reviews") == 2
+    assert run.db.get_meta("final_reviews") == 2 and "final.review2" not in fake.seen
     assert any("names no source" in t for t in fake.seen["lead"])
 
 
 async def test_unverified_when_final_review_never_passes(make_run):
-    no = [[call("verdict", passed=False, findings="The deliverable names no source at all.")]]
+    no = [call("verdict", result="fail", findings="The deliverable names no source at all.")]
     run, _ = make_run({"lead": lead_script(GOAL | {"tasks": [task("a")]}), "a": worker(),
-                       "final.review1": no, "final.review2": no})
+                       "final.review1": lambda messages: no})
     assert await orchestrator.execute(run) == "done_unverified"
+    assert run.db.get_meta("final_reviews") == 3
     assert "names no source" in orchestrator.summary(run)["final_findings"]
 
 
@@ -290,7 +298,7 @@ async def test_a_worker_corrects_its_records_after_a_failed_review(make_run):
     def reviewer(messages):
         rows = [r for r in stored(run) if r["_task"] == "find"]
         ok = [r["name"] for r in rows] == ["Acme"] and rows[0].get("employees") == 15
-        return [call("verdict", passed=ok, findings="Read the store: Bolt is a reseller and Acme has 15 employees.")]
+        return [call("verdict", result="pass" if ok else "fail", findings="Read the store: Bolt is a reseller and Acme has 15 employees.")]
 
     run, fake = make_run({
         "lead": lead_script(GOAL | {"collections": COLLECTIONS, "tasks": [task("find"), task("other", ["find"])]}),
@@ -301,7 +309,7 @@ async def test_a_worker_corrects_its_records_after_a_failed_review(make_run):
              call("store_update", collection="companies", ids=[1], set={"employees": 15}, reason="the page says 15")],
             [call("report", summary="Removed the reseller and corrected Acme.")],
         ],
-        "find.review1": reviewer, "find.review2": reviewer,
+        "find.review1": reviewer,
         "other": [
             [call("store_write", collection="companies", records=[record("Coil")])],
             [call("store_delete", collection="companies", where={"name": "Acme"}, reason="not mine, but I try"),
@@ -339,7 +347,7 @@ async def test_who_may_change_which_records(make_run):
             [call("store_update", collection="companies", ids=[1], set={"employees": 1}, reason="a late thought")],
         ],
         "find.review1": [[call("store_delete", collection="companies", ids=[1], reason="a reviewer fixing things")],
-                         [call("verdict", passed=True, findings="Opened the record and its source.")]],
+                         [call("verdict", result="pass", findings="Opened the record and its source.")]],
     })
     assert await orchestrator.execute(run) == "done"
     assert stored(run) == []

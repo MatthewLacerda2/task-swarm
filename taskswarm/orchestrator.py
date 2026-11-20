@@ -1,6 +1,7 @@
 """Runs the plan: starts each task when its blockers have passed review, puts every
-report in front of a reviewer, sends failed work back, and wakes whoever owns a task
-(the lead, or the worker that split its task) when something it has to know happens.
+report in front of a reviewer, sends wrong work back to its worker and incomplete work
+to its owner, and wakes whoever owns a task (the lead, or the worker that split its
+task) when something it has to know happens.
 
 Nothing here decides what the work is; that is the plan. This is the part of a
 company that doesn't need judgment: the schedule, the hand-offs and the rule that
@@ -23,7 +24,7 @@ from .run import Run
 
 log = logging.getLogger("taskswarm")
 
-FINISHED = ("done", "done_unverified")
+FINISHED = ("done", "done_with_gaps", "done_unverified")
 STOP_REASONS = {
     "agent_budget": "its agent ran out of budget",
     "task_budget": "the task and its sub-team used up the task's budget",
@@ -280,30 +281,70 @@ class Orchestrator:
                 log.info("task %s handed in (report %d)", tid, task["attempts"] + 1)
                 task = db.task(tid)
 
-            reviewer = f"{tid}.review{task['attempts']}"
-            text = ""
-            if db.agent(reviewer) is None:
-                db.add_agent(reviewer, "reviewer", tid)
-                text = prompts.reviewer_first(run, reviewer, task)
-            out = await run_agent(run, reviewer, text)
+            reviewer, out = await self._review(tid, task)
             if out.kind != "verdict":
                 return self._stopped(tid, out, reviewing=True)
-            db.event(reviewer, "verdict", {"passed": out.data["passed"]})
-            findings = out.data["findings"]
-            if out.data["passed"]:
-                db.update_task(tid, status="done", findings=findings)
+            result, findings = out.data["result"], out.data["findings"]
+            db.event(reviewer, "verdict", {"result": result})
+            if result == "pass":
+                db.update_task(tid, status="done", findings=findings, gaps=None)
                 log.info("task %s passed review", tid)
                 self._tell_owner(tid, f"Task `{tid}` ({task['title']}) passed review.\n\nIts report:\n"
                                       f"{task['summary']}\n\nIts files are in /task/work/{tid}/.")
                 return
+            if result == "partial":
+                # Right as far as it goes, and its worker can't get the rest: that is the owner's call.
+                db.update_task(tid, status="partial", findings=findings, gaps=out.data["missing"])
+                log.info("task %s is partial after review %d: its owner decides", tid, task["attempts"])
+                self._tell_owner(
+                    tid,
+                    f"Task `{tid}` ({task['title']}) was reviewed. What it delivered is right, but something that "
+                    "was asked for is missing, and the reviewer judges that its worker would not get it by trying "
+                    f"again.\n\nMissing:\n{out.data['missing']}\n\nIts report:\n{task['summary']}\n\nIts files are "
+                    f"in /task/work/{tid}/.\n\nThis is yours to decide, with `decide`: accept the task as "
+                    "delivered (it counts as done and what is missing stays recorded on it), or send it back with "
+                    "what to do instead (a smaller target, another source, a different method). You can also "
+                    "cancel it with `plan` and define a replacement. Tasks blocked by it wait for you.")
+                return
+            fails = task["fails"] + 1
             log.info("task %s did not pass review %d", tid, task["attempts"])
-            if task["attempts"] >= cfg.max_attempts:
-                return self._fail_task(tid, f"it did not pass review after {task['attempts']} reports. "
+            db.update_task(tid, fails=fails)
+            if fails >= cfg.max_attempts:
+                return self._fail_task(tid, f"its work was sent back {fails} times and still did not pass. "
                                             f"The last reviewer's findings:\n{findings}")
             db.update_task(tid, status="running", findings=findings)
-            text = (f"The reviewer did not pass your work (report {task['attempts']} of at most {cfg.max_attempts})."
-                    f" Its findings:\n\n{findings}\n\nFix them and call `report` again. If a finding is wrong, say why "
-                    "in the report.")
+            text = (f"The reviewer did not pass your work (failed review {fails} of at most {cfg.max_attempts})."
+                    f" Its findings:\n\n{findings}\n\nFix them and call `report` again; the same reviewer then "
+                    "checks that each finding is fixed. If a finding is wrong, say why in the report. If a finding "
+                    "asks for something you tried and could not get, don't try the same way again: put it in "
+                    "`not_done` with what you tried, and the task's owner decides.")
+
+    async def _review(self, tid: str, task) -> tuple[str, Outcome]:
+        """Review of the task's latest report. The first is a full review. After that the same reviewer
+        checks that its own findings were fixed: a new reviewer starting over finds a different list of
+        small problems each time, and work whose substance is right runs out of attempts."""
+        fresh = f"{tid}.review{task['attempts']}"
+        reviewer = task["reviewer"] or fresh
+        out = await self._review_round(reviewer, task)
+        if out.kind == "failed" and out.reason != "hard_stop" and reviewer != fresh:
+            # It can't go on (its budget, its memory): a new reviewer starts from its findings.
+            log.info("reviewer %s can't continue (%s); %s takes over", reviewer, out.reason, fresh)
+            reviewer = fresh
+            out = await self._review_round(reviewer, task, previous=task["findings"])
+        return reviewer, out
+
+    async def _review_round(self, reviewer: str, task, previous: str | None = None) -> Outcome:
+        run, db, tid = self.run, self.db, task["id"]
+        text = ""
+        if db.agent(reviewer) is None:
+            db.add_agent(reviewer, "reviewer", tid)
+            text = prompts.reviewer_first(run, reviewer, task, previous)
+            db.update_task(tid, reviewer=reviewer, asked=task["attempts"])
+        elif task["asked"] < task["attempts"]:
+            # In its inbox, so that a run killed right here still delivers it.
+            run.send(reviewer, "system", prompts.review_again(run, task))
+            db.update_task(tid, asked=task["attempts"])
+        return await run_agent(run, reviewer, text)
 
     async def _wait_for_team(self, tid: str, stalls: int) -> tuple[int, Outcome]:
         """The worker of `tid` ended its turn with sub-tasks open: wake it when it has news."""
@@ -352,49 +393,68 @@ class Orchestrator:
         """Tell whoever planned this task (the lead, or the worker that split its own) how it ended."""
         run = self.run
         owner = self.db.task(tid)["parent"]
-        if stuck := plan.stuck(run, owner):
-            text += f"\n\nCan never start because of a failed task: {', '.join(stuck)}."
-        if moving := plan.moving(run, owner):
-            text += f"\n\nStill open: {', '.join(moving)}. End your turn unless the plan should change."
-        elif owner:
-            text += ("\n\nNone of your sub-tasks is running or waiting to start.\n" + plan.overview(run, owner) +
-                     "\nPut the results together, do what is left yourself, and call `report`.")
-        else:
-            text += ("\n\nNo task is running or waiting to start.\n" + plan.overview(run) +
-                     "\nIf the goal is met, write the deliverable and call `finish`; otherwise add tasks.")
+        text += plan.what_next(run, owner, settled=tid)
         run.send(owner or "lead", "system", text)
 
     # --- the end ---------------------------------------------------------------------
 
     async def _final_job(self) -> None:
+        """Review `n` of the deliverable, by the same rule as a task's review (`_review`): the first is a
+        full review, and after that the same reviewer checks that its own findings were fixed."""
         run, db, cfg = self.run, self.db, self.run.cfg
         n = db.get_meta("final_reviews", 1)
-        deliverable = db.get_meta("deliverable")
-        reviewer = f"final.review{n}"
-        text = ""
-        if db.agent(reviewer) is None:
-            db.add_agent(reviewer, "reviewer")
-            text = prompts.final_first(run, reviewer, deliverable["file"], deliverable["summary"])
-        out = await run_agent(run, reviewer, text)
+        fresh = f"final.review{n}"
+        reviewer = db.get_meta("final_reviewer")
+        if reviewer is None:
+            reviewer = fresh
+            db.set_meta("final_reviewer", reviewer)
+        out = await self._final_round(reviewer, n)
+        if out.kind == "failed" and out.reason != "hard_stop" and reviewer != fresh:
+            # It can't go on (its budget, its memory): a new reviewer starts from its findings.
+            log.info("final reviewer %s can't continue (%s); %s takes over", reviewer, out.reason, fresh)
+            reviewer = fresh
+            db.set_meta("final_reviewer", reviewer)
+            out = await self._final_round(reviewer, n)
         if out.kind == "failed" and out.reason == "hard_stop":
             return
-        passed = out.kind == "verdict" and out.data["passed"]
-        findings = out.data.get("findings") if out.kind == "verdict" else \
+        result = out.data["result"] if out.kind == "verdict" else "fail"
+        findings = out.data["findings"] if out.kind == "verdict" else \
             f"The final review could not be completed: {STOP_REASONS.get(out.reason, out.reason)}."
+        if result == "partial":
+            findings += f"\n\nAsked for and not delivered:\n{out.data['missing']}"
         db.set_meta("final_findings", findings)
         db.set_meta("final_pending", False)
-        db.event(reviewer, "final_verdict", {"passed": passed})
-        if passed:
+        db.event(reviewer, "final_verdict", {"result": result})
+        if result == "pass":
             db.set_meta("status", "done")
+        elif result == "partial":
+            # What the deliverable says holds, and it can't be made complete: the user decides what that is worth.
+            db.set_meta("status", "done_with_gaps")
         elif n >= cfg.max_final_reviews or run.budget.winding_down:
             db.set_meta("status", "done_unverified")
         else:
             run.send("lead", "system",
                      f"The final reviewer did not pass the deliverable (review {n} of at most "
                      f"{cfg.max_final_reviews}). Its findings:\n\n{findings}\n\nFix the deliverable, with new tasks "
-                     "if it needs them, and call `finish` again.")
-        log.info("final review %d: %s", n, "passed" if passed else "not passed")
+                     "if it needs them, and call `finish` again. The same reviewer then checks that each of these "
+                     "findings is fixed.")
+        log.info("final review %d: %s", n, result)
         run.wake.set()
+
+    async def _final_round(self, reviewer: str, n: int) -> Outcome:
+        run, db = self.run, self.db
+        deliverable = db.get_meta("deliverable")
+        text = ""
+        if db.agent(reviewer) is None:
+            db.add_agent(reviewer, "reviewer")
+            text = prompts.final_first(run, reviewer, deliverable["file"], deliverable["summary"],
+                                       previous=db.get_meta("final_findings") if n > 1 else None)
+            db.set_meta("final_asked", n)
+        elif db.get_meta("final_asked", 1) < n:
+            # In its inbox, so that a run killed right here still delivers it.
+            run.send(reviewer, "system", prompts.final_again(run, n, deliverable["file"], deliverable["summary"]))
+            db.set_meta("final_asked", n)
+        return await run_agent(run, reviewer, text)
 
 
 async def execute(run: Run) -> str:

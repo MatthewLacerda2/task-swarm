@@ -35,7 +35,7 @@ RESERVED = {"lead", "final", "system", "planner"}
 REVIEW_RE = re.compile(r"^review\d*$")
 MIN_BRIEF = 100
 MIN_VERIFY = 20
-STARTED = ("running", "reviewing", "done", "failed")
+STARTED = ("running", "reviewing", "partial", "done", "failed")
 
 
 def _text(value: object) -> str:
@@ -267,9 +267,14 @@ def stuck(run: Run, owner: str | None = None) -> list[str]:
     ]
 
 
+def undecided(run: Run, owner: str | None = None) -> list[str]:
+    """An owner's tasks that were reviewed as partial and wait for its decision."""
+    return [t["id"] for t in run.db.children(owner) if t["status"] == "partial"]
+
+
 def moving(run: Run, owner: str | None = None) -> list[str]:
-    """An owner's open tasks that are being worked on or can still start."""
-    bad = stuck(run, owner)
+    """An owner's open tasks that are being worked on or can still start without it doing anything."""
+    bad = stuck(run, owner) + undecided(run, owner)
     return [t["id"] for t in run.db.children(owner) if t["status"] in OPEN and t["id"] not in bad]
 
 
@@ -287,7 +292,33 @@ def overview(run: Run, owner: str | None = None) -> str:
         lines.append(line)
     if bad := stuck(run, owner):
         lines.append(f"Can never start, because a task they depend on failed: {', '.join(bad)}.")
+    if waiting := undecided(run, owner):
+        lines.append(f"Waiting for your decision (`decide`): {', '.join(waiting)}. What each is missing was sent "
+                     "to you when it was reviewed.")
     return "\n".join(lines)
+
+
+def what_next(run: Run, owner: str | None = None, settled: str | None = None) -> str:
+    """Added to what an owner is told when one of its tasks settles: what can't start, what waits for
+    its decision, and what is left to do. `settled` is the task the text is already about."""
+    text = ""
+    if bad := stuck(run, owner):
+        text += f"\n\nCan never start because of a failed task: {', '.join(bad)}."
+    waiting = undecided(run, owner)
+    if others := [t for t in waiting if t != settled]:
+        text += f"\n\nWaiting for your decision (`decide`): {', '.join(others)}."
+    if still := moving(run, owner):
+        text += f"\n\nStill open: {', '.join(still)}." + (
+            "" if waiting else " End your turn unless the plan should change.")
+    elif waiting:
+        pass                               # the next step is the decision, and the text already says so
+    elif owner:
+        text += ("\n\nNone of your sub-tasks is running or waiting to start.\n" + overview(run, owner) +
+                 "\nPut the results together, do what is left yourself, and call `report`.")
+    else:
+        text += ("\n\nNo task is running or waiting to start.\n" + overview(run) +
+                 "\nIf the goal is met, write the deliverable and call `finish`; otherwise add tasks.")
+    return text
 
 
 def give(run: Run, inp: object) -> tuple[bool, str]:

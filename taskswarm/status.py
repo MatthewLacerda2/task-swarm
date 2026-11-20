@@ -54,10 +54,13 @@ def render(run_id: str) -> str:
                               (t["id"], t["id"] + ".%")).fetchone()[0]
             blockers = json.loads(t["blocked_by"])
             name = "  " * t["id"].count(".") + t["id"]
-            line = f"  {name:<28} {t['status']:<10} reports {t['attempts']}  US$ {cost:.3f}  {t['title']}"
+            state = t["status"] + ("*" if t["status"] == "done" and "gaps" in t.keys() and t["gaps"] else "")
+            line = f"  {name:<28} {state:<10} reports {t['attempts']}  US$ {cost:.3f}  {t['title']}"
             if blockers:
                 line += f"  (after {', '.join(blockers)})"
             out.append(line)
+        if any(t["status"] == "done" and "gaps" in t.keys() and t["gaps"] for t in tasks):
+            out.append("  * done with something missing, accepted by the task's owner; see the run's README.md")
 
     schema_path = cfg.run_dir / "store" / "schema.json"
     if schema_path.exists():

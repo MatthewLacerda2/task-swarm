@@ -169,11 +169,45 @@ TOOLS = [
                 "summary": {
                     "type": "string",
                     "description": "The result first, then what the lead needs to know to use it: where the output "
-                                   "is, what wasn't done, what is uncertain.",
+                                   "is and what is uncertain.",
+                },
+                "not_done": {
+                    "type": "string",
+                    "description": "Each thing the brief or `verify` asks for that you are not delivering, and why "
+                                   "it could not be done: what you tried and what stopped you. Leave it out when "
+                                   "everything asked for is delivered.",
                 },
                 "how": {"type": "string", "description": "Optional, brief: how you went about it."},
             },
             "required": ["summary"],
+        },
+    },
+    {
+        "name": "decide",
+        "description": (
+            "Owner of a task only (the lead for its tasks, a worker for its sub-tasks). Settle a task whose review "
+            "ended in `partial`: what it delivered is right, something asked for is missing, and its worker can't "
+            "supply it by trying again. Accept it as it is, or send it back with what to do instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string"},
+                "accept": {
+                    "type": "boolean",
+                    "description": "true: the task is done as delivered; what is missing stays recorded on it and "
+                                   "is shown to the tasks that build on it and to the final reviewer. false: the "
+                                   "worker continues, under what you say in `note`.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "With accept false, required: what the worker should do instead (a smaller "
+                                   "target, another source, a different method). It is recorded on the task as your "
+                                   "decision and the next reviewer checks the work against it. With accept true, "
+                                   "optional: why what exists is enough.",
+                },
+            },
+            "required": ["task", "accept"],
         },
     },
     {
@@ -182,14 +216,26 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "passed": {"type": "boolean"},
+                "result": {
+                    "type": "string",
+                    "enum": ["pass", "partial", "fail"],
+                    "description": "pass: it meets what was asked. fail: something is wrong, or missing and within "
+                                   "the worker's reach; it goes back to be fixed. partial: what was delivered is "
+                                   "right, but something asked for is missing and trying again would not get it; "
+                                   "whoever owns the work decides what happens next.",
+                },
                 "findings": {
                     "type": "string",
-                    "description": "What you checked and how. If it didn't pass: each problem, specific enough to "
-                                   "fix without asking you.",
+                    "description": "What you checked and how. With fail: each problem, specific enough to fix "
+                                   "without asking you.",
+                },
+                "missing": {
+                    "type": "string",
+                    "description": "With partial only: each thing asked for that is not delivered, and what you did "
+                                   "to check that it can't be.",
                 },
             },
-            "required": ["passed", "findings"],
+            "required": ["result", "findings"],
         },
     },
     {
@@ -211,7 +257,9 @@ TOOLS = [
 
 ALLOWED = {
     "planner": {"bash", "plan"},
-    "lead": {"bash", "plan", "send_message", "post", "store_write", "store_update", "store_delete", "finish"},
-    "worker": {"bash", "plan", "send_message", "post", "store_write", "store_update", "store_delete", "report"},
+    "lead": {"bash", "plan", "decide", "send_message", "post", "store_write", "store_update", "store_delete",
+             "finish"},
+    "worker": {"bash", "plan", "decide", "send_message", "post", "store_write", "store_update", "store_delete",
+               "report"},
     "reviewer": {"bash", "send_message", "post", "verdict"},
 }

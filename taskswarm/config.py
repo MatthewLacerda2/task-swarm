@@ -108,8 +108,8 @@ class RunConfig:
     max_depth: int = 2               # 1 = only the lead splits work; 2 = a worker may split its task once
     max_subtasks: int = 6            # pieces one worker may split its task into
     max_parallel: int = 4            # tasks worked on at once
-    max_attempts: int = 3            # reports a worker gets reviewed before its task fails
-    max_final_reviews: int = 2
+    max_attempts: int = 3            # reviews that send a task's work back before the task fails
+    max_final_reviews: int = 3       # the first is a full review; the next ones check its findings were fixed
     summary_chars: int = 4_000       # a report's summary: what the lead carries in its context
     # Channels
     post_chars: int = 1_000          # one post

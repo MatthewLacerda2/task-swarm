@@ -46,6 +46,17 @@ what it does and how to run it.
   may contest a premise, never override it. The owner's answer is stored on the task
   (`tasks.decisions`) and shown to the reviewer; a new way to change a running task
   goes through the owner and is recorded the same way.
+- **A review's result goes to whoever can act on it.** Wrong work goes back to its
+  worker (`fail`); right but incomplete work goes to the task's owner (`partial`,
+  settled with `decide`), never back to the worker as a failure. Only `fail` counts
+  toward `max_attempts`. A new kind of review result needs the same answer first: who
+  can do something about it? What an owner accepts as missing is stored on the task
+  (`tasks.gaps`) and shown wherever the task's report is shown.
+- **Findings are re-checked by the reviewer that made them.** A task's reviewer and
+  the final reviewer keep their conversation across rounds (`Orchestrator._review`,
+  `_final_job`); a new one takes over, with the earlier findings, only when it can't
+  continue. A new reviewer starting over finds a different list of small problems each
+  time, and work whose substance is right runs out of attempts (seen in a real run).
 - **The store is corrected in the store.** A wrong record is updated or deleted
   (`Store.change`), never left in place with the right version kept in a file. Who
   may change a record follows who owns the task that wrote it; every change is

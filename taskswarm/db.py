@@ -68,12 +68,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     brief TEXT NOT NULL,
     verify TEXT NOT NULL,
     blocked_by TEXT NOT NULL,          -- JSON list of task ids
-    status TEXT NOT NULL,              -- pending | running | reviewing | done | failed | cancelled
+    status TEXT NOT NULL,              -- pending | running | reviewing | partial | done | failed | cancelled
     attempts INTEGER NOT NULL DEFAULT 0,   -- reports handed to a reviewer so far
+    fails INTEGER NOT NULL DEFAULT 0,      -- of those, the reviews that sent the work back
     summary TEXT,                      -- the worker's latest report
     how TEXT,
     findings TEXT,                     -- the latest reviewer's findings, or why it failed
+    gaps TEXT,                         -- what it was asked for and did not deliver, as its reviewer confirmed
     decisions TEXT,                    -- JSON list: what the task's owner ruled after the brief was written
+    reviewer TEXT,                     -- the agent that reviews it; the same one across reports while it can go on
+    asked INTEGER NOT NULL DEFAULT 0,  -- the latest report its reviewer was asked to check
     created REAL NOT NULL,
     updated REAL NOT NULL
 );
@@ -107,7 +111,9 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
-OPEN = ("pending", "running", "reviewing")
+# partial: reviewed and right as far as it goes, but something asked for is missing and its
+# worker can't supply it. It waits for its owner's decision (handlers._decide).
+OPEN = ("pending", "running", "reviewing", "partial")
 
 
 class DB:
@@ -120,9 +126,15 @@ class DB:
         self.conn.executescript(SCHEMA)
         # runs made by an older version
         have = {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}
-        for column in ("parent", "decisions"):
+        for column in ("parent", "decisions", "gaps", "reviewer"):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")
+        if "fails" not in have:      # until then every review that didn't pass sent the work back
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN fails INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute("UPDATE tasks SET fails = MAX(0, attempts - (status IN ('reviewing', 'done')))")
+        if "asked" not in have:      # until then every report had its own reviewer, named after the report
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN asked INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute("UPDATE tasks SET asked = attempts")
         if "seen_post" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(agents)")}:
             self.conn.execute("ALTER TABLE agents ADD COLUMN seen_post INTEGER NOT NULL DEFAULT 0")
 

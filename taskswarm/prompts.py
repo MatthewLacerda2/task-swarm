@@ -69,6 +69,14 @@ def _store(run: Run) -> str:
     return f"# The store\n\n{run.store.describe()}"
 
 
+def _gaps(task) -> str:
+    """For a task its owner accepted with something missing: what, as its reviewer confirmed."""
+    if task["status"] != "done" or not task["gaps"]:
+        return ""
+    return ("\n\nIts owner accepted it with this missing, as its reviewer confirmed. Work with what exists and "
+            f"don't assume the rest:\n{task['gaps']}")
+
+
 def worker_first(run: Run, task) -> str:
     parts = [
         identity(task["id"], "worker"),
@@ -90,46 +98,85 @@ def worker_first(run: Run, task) -> str:
     if blockers:
         lines = ["# Reports of the tasks yours builds on"]
         for b in blockers:
-            lines.append(f"## `{b['id']}`: {b['title']}\n\n{b['summary']}\n\nIts files are in /task/work/{b['id']}/.")
+            lines.append(f"## `{b['id']}`: {b['title']}\n\n{b['summary']}{_gaps(b)}\n\n"
+                         f"Its files are in /task/work/{b['id']}/.")
         parts.append("\n\n".join(lines))
     parts.append(_store(run))
     return "\n\n".join(parts)
 
 
-def reviewer_first(run: Run, reviewer: str, task) -> str:
+def _handed_in(task) -> list[str]:
+    """What a reviewer is shown of a task's latest report, and what its owner ruled since the brief."""
     report = task["summary"] or "(empty)"
     if task["how"]:
         report += f"\n\nHow it was done, according to the worker:\n{task['how']}"
+    return [
+        f"# The worker's report\n\n{report}",
+        *(["# Decisions by the task's owner since the brief\n\n" +
+           "\n".join(f"- {d}" for d in json.loads(task["decisions"]))] if task["decisions"] else []),
+        *([f"# What an earlier review found missing\n\n{task['gaps']}\n\nThe owner then sent the task back with "
+           "the latest decision above."] if task["gaps"] else []),
+    ]
+
+
+def _review_count(run: Run, task) -> str:
+    return (f"This is review {task['attempts']} of this task. Its work was sent back {task['fails']} times so far; "
+            f"at {run.cfg.max_attempts} the task fails.")
+
+
+def review_again(run: Run, task) -> str:
+    """To a task's reviewer, when the worker hands in again after its review."""
+    return "\n\n".join([
+        f"The worker of `{task['id']}` handed in again. {_review_count(run, task)}",
+        *_handed_in(task),
+        "Check that each problem in your findings is fixed, and that the fixes are right: re-read what changed and "
+        "re-run what it rests on. Where the worker says a finding is wrong or could not be met, check its reason. "
+        "What you already checked and found right stands unless the worker changed it, so don't start the review "
+        "over. A new problem counts only if the work doesn't meet `verify` because of it; anything smaller goes in "
+        "`findings` as a remark, without failing the work. Then give your `verdict` again; in `findings`, say for "
+        "each earlier problem whether it is fixed.",
+    ])
+
+
+def reviewer_first(run: Run, reviewer: str, task, previous: str | None = None) -> str:
     parts = [
         identity(reviewer, "reviewer"),
         f"# The goal of the whole team\n\n{run.db.get_meta('goal')}",
         f"# The task under review: `{task['id']}`, {task['title']}\n\n{task['brief']}",
         f"# What to check\n\n{task['verify']}",
-        f"# The worker's report\n\n{report}",
-        *(["# Decisions by the task's owner since the brief\n\n" +
-           "\n".join(f"- {d}" for d in json.loads(task["decisions"]))] if task["decisions"] else []),
+        *_handed_in(task),
+        *([f"# What the previous reviewer found\n\nIt could not continue, so the review is yours. The worker has "
+           f"reworked the task since.\n\n{previous}"] if previous else []),
         f"The worker's files are in /task/work/{task['id']}/. The records it stored have "
-        f"\"_task\": \"{task['id']}\". This is review {task['attempts']} of at most {run.cfg.max_attempts}.",
+        f"\"_task\": \"{task['id']}\". {_review_count(run, task)}",
         _store(run),
     ]
     pieces = run.db.children(task["id"])
     if pieces:
-        lines = [f"- `{t['id']}` ({t['status']}): {t['title']}" for t in pieces]
+        lines = [f"- `{t['id']}` ({t['status']}): {t['title']}" +
+                 (" (accepted by the worker with something missing: " + " ".join(t["gaps"].split())[:300] + ")"
+                  if t["status"] == "done" and t["gaps"] else "") for t in pieces]
         parts.insert(-2, "# Sub-tasks\n\nThe worker split this task. Each piece that is done was reviewed by itself; "
                         "you check the whole, including what the pieces don't cover and how they were put "
                         "together. Their files are in /task/work/<id>/.\n" + "\n".join(lines))
     return "\n\n".join(parts)
 
 
-def final_first(run: Run, reviewer: str, deliverable: str, summary: str) -> str:
+def _final_tasks(run: Run) -> str:
     tasks = []
     for t in run.db.children(None):
         line = f"- `{t['id']}` ({t['status']}): {t['title']}"
         if t["status"] == "done" and t["summary"]:
             line += f"\n  Report: {t['summary'][:600]}"
+            if t["gaps"]:
+                line += f"\n  Accepted by the lead with this missing: {t['gaps'][:600]}"
         elif t["status"] == "failed":
             line += f"\n  Failed: {(t['findings'] or '')[:400]}"
         tasks.append(line)
+    return "# The tasks\n\n" + ("\n".join(tasks) or "(none)")
+
+
+def final_first(run: Run, reviewer: str, deliverable: str, summary: str, previous: str | None = None) -> str:
     parts = [
         identity(reviewer, "reviewer"),
         "You review the finished work of the whole team.",
@@ -137,10 +184,31 @@ def final_first(run: Run, reviewer: str, deliverable: str, summary: str) -> str:
         f"# The goal the lead set\n\n{run.db.get_meta('goal')}",
         f"# What to check\n\n{run.db.get_meta('done_when')}",
         f"# The deliverable\n\n/task/deliverable/{deliverable}\n\nThe lead's summary:\n{summary}",
-        "# The tasks\n\n" + ("\n".join(tasks) or "(none)"),
+        _final_tasks(run),
         _store(run) + f"\n\nSignals logged (conflicting records): {run.store.signals}. Corrections logged "
                       f"(records updated or deleted after they were stored): {run.store.changes}, in changes.jsonl.",
         "Check the deliverable against the store and the sources, not only against itself: a claim in it should "
         "trace to a record or a file. Check too that it is honest about what was not found.",
+        "Your verdict: `fail` when something the deliverable says is wrong, unsupported or contradicts itself, or "
+        "when it hides something missing; the lead can fix that. `partial` when everything it says holds and it "
+        "states plainly what is missing, but part of what was asked for could not be delivered: the user then "
+        "decides what the result is worth. Something missing that the lead accepted on a task (above) is a reason "
+        "for `partial`, never for `fail`, as long as the deliverable says it.",
     ]
+    if previous:
+        parts.insert(-2, "# What the previous final reviewer found\n\nIt could not continue, so the review is yours. "
+                         f"The lead has reworked the deliverable since.\n\n{previous}")
     return "\n\n".join(parts)
+
+
+def final_again(run: Run, n: int, deliverable: str, summary: str) -> str:
+    """To the final reviewer, when the lead hands in again after its findings."""
+    return "\n\n".join([
+        f"The lead handed in the deliverable again: /task/deliverable/{deliverable} (review {n} of at most "
+        f"{run.cfg.max_final_reviews}).\n\nThe lead's summary:\n{summary}",
+        _final_tasks(run),
+        "Check that each problem in your findings is fixed, and that the fixes are right: re-read what changed and "
+        "re-run what it rests on. What you already checked and found right stands unless the lead changed it, so "
+        "don't start the review over. A new problem counts only if it makes something the deliverable says wrong. "
+        "Then give your `verdict` again; in `findings`, say for each earlier problem whether it is fixed.",
+    ])

@@ -2,12 +2,18 @@
 
 An outcome ends the agent's assignment: a worker's report, a reviewer's verdict, the
 lead's finish. Everything else returns None and the agent carries on.
+
+A review has three results, and each goes to whoever can act on it: `pass` closes the
+task; `fail` goes back to the worker, who can fix it; `partial` (right as far as it
+goes, something asked for is missing, another try would not get it) goes to the task's
+owner, who settles it with `decide`. Only `fail` counts against the task.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -17,8 +23,13 @@ from .db import OPEN
 from .run import Run, work_dir
 from .tools import ALLOWED
 
+log = logging.getLogger("taskswarm")
+
 MESSAGE_CHARS = 4_000
 DELIVERABLE_MAX = 50 * 1024 * 1024
+RESULTS = ("pass", "partial", "fail")
+NOT_DONE = "Not delivered, and why:"      # heads that part of a report, wherever the report is shown
+NOTE_MIN = 20
 
 
 @dataclass
@@ -208,24 +219,94 @@ async def _report(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
     if len(summary) > limit:
         return (f"The summary is {len(summary):,} characters; the limit is {limit:,}. Keep the result and what the "
                 "lead needs; put the detail in a file in your folder and name it."), True, None
+    not_done = inp.get("not_done").strip() if isinstance(inp.get("not_done"), str) else ""
+    if len(not_done) > limit // 2:
+        return (f"`not_done` is {len(not_done):,} characters; the limit is {limit // 2:,}. Name each thing and the "
+                "reason; put the detail in a file in your folder."), True, None
     still = [t["id"] for t in run.db.children(agent) if t["status"] in OPEN]
     if still:
-        return (f"Your sub-tasks are still open: {', '.join(still)}. End your turn to wait for them, or cancel them "
-                "with `plan`. Your report covers the whole task, so it comes after them."), True, None
+        text = (f"Your sub-tasks are still open: {', '.join(still)}. End your turn to wait for them, or cancel them "
+                "with `plan`. Your report covers the whole task, so it comes after them.")
+        if waiting := plan.undecided(run, agent):
+            text += f" Waiting for your decision (`decide`): {', '.join(waiting)}."
+        return text, True, None
     how = inp.get("how") if isinstance(inp.get("how"), str) else ""
-    return ("Handed in. A reviewer will check it; if it doesn't pass you will get the findings.", False,
-            Outcome("report", {"summary": summary.strip(), "how": how.strip()[:limit]}))
+    report = summary.strip() + (f"\n\n{NOT_DONE}\n{not_done}" if not_done else "")
+    return ("Handed in. A reviewer will check it. If something in it is wrong you get the findings to fix; if "
+            "something is missing that you could not get, whoever gave you the task decides what happens.", False,
+            Outcome("report", {"summary": report, "how": how.strip()[:limit]}))
 
 
 async def _verdict(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
     if closed:
         return "Your review is already handed in; answer with `send_message`.", True, None
-    passed, findings = inp.get("passed"), inp.get("findings")
-    if not isinstance(passed, bool):
-        return "`passed` must be true or false.", True, None
+    result, findings = inp.get("result"), inp.get("findings")
+    if result not in RESULTS:
+        return "`result` must be `pass`, `partial` or `fail`.", True, None
     if not isinstance(findings, str) or len(findings.strip()) < 20:
         return "`findings` is missing: say what you checked and how, and each problem if it didn't pass.", True, None
-    return "Verdict recorded.", False, Outcome("verdict", {"passed": passed, "findings": findings.strip()[:8000]})
+    missing = inp.get("missing").strip() if isinstance(inp.get("missing"), str) else ""
+    if result == "partial" and len(missing) < 20:
+        return ("`missing` is empty: with `partial`, list each thing asked for that is not delivered and what you "
+                "did to check that it can't be."), True, None
+    if result != "partial" and missing:
+        return ("`missing` goes with `partial` only. If what is missing could still be delivered by trying again, "
+                "the result is `fail` and it belongs in `findings`. If it can't be, and the rest is right, the "
+                "result is `partial`."), True, None
+    return "Verdict recorded.", False, Outcome("verdict", {"result": result, "findings": findings.strip()[:8000],
+                                                           "missing": missing[:4000]})
+
+
+async def _decide(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
+    """The owner of a task settles a partial review: the task is done as it is, or its worker continues
+    under a new decision. Until then nothing that is blocked by the task starts."""
+    db = run.db
+    owner = None if row["role"] == "lead" else agent
+    if owner and (closed or db.task(agent)["status"] != "running"):
+        return "Your task is already handed in, so its sub-tasks are not yours to settle now.", True, None
+    waiting = plan.undecided(run, owner)
+    tid = inp.get("task")
+    if owner and isinstance(tid, str) and not tid.startswith(owner + "."):
+        tid = f"{owner}.{tid}"
+    if tid not in waiting:
+        task = db.task(tid) if isinstance(tid, str) else None
+        if task is None or task["parent"] != owner:
+            text = f"You have no task `{tid}`."
+        else:
+            text = f"`{tid}` is {task['status']}; `decide` settles a task whose review ended in `partial`."
+        return (text + (f" Waiting for your decision: {', '.join(waiting)}." if waiting
+                        else " No task is waiting for your decision.")), True, None
+    accept = inp.get("accept")
+    if not isinstance(accept, bool):
+        return "`accept` must be true or false.", True, None
+    note = inp.get("note").strip() if isinstance(inp.get("note"), str) else ""
+    if len(note) > MESSAGE_CHARS:
+        return f"`note` is too long ({len(note):,} > {MESSAGE_CHARS:,} characters).", True, None
+    task = db.task(tid)
+    if accept:
+        gaps = task["gaps"] + (f"\n\nWhy `{agent}` accepted it like this: {note}" if note else "")
+        db.update_task(tid, status="done", gaps=gaps)
+        db.event(agent, "decide", {"task": tid, "accept": True})
+        log.info("task %s accepted by %s with something missing", tid, agent)
+        run.wake.set()
+        return (f"`{tid}` is done as delivered. What is missing stays recorded on it: the tasks that build on it and "
+                "the final reviewer are told. Say it in what you hand in too." + plan.what_next(run, owner)), False, None
+    if run.budget.winding_down:
+        return ("The run's budget is used up, so the task can't go back to its worker. Accept it as delivered, or "
+                "cancel it with `plan`, and say what is missing in what you hand in."), True, None
+    if len(note) < NOTE_MIN:
+        return ("`note` is missing: to send the task back, say what its worker should do instead. Asking for the "
+                "same thing again gets the same result."), True, None
+    decisions = json.loads(task["decisions"] or "[]") + [note]
+    db.update_task(tid, status="running", decisions=json.dumps(decisions, ensure_ascii=False))
+    run.send(tid, "system",
+             f"Your report was reviewed. What you delivered is right, but this is missing:\n\n{task['gaps']}\n\n"
+             f"`{agent}`, who gave you the task, decided:\n\n{note}\n\nThat decision is now part of your task. "
+             "Carry on from what you have and call `report` again. This did not count as a failed review.")
+    db.event(agent, "decide", {"task": tid, "accept": False})
+    log.info("task %s sent back by %s with a decision", tid, agent)
+    return (f"`{tid}` goes back to its worker with your decision, which is recorded on the task: its next reviewer "
+            "checks the work against it. End your turn to wait."), False, None
 
 
 async def _finish(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
@@ -240,6 +321,9 @@ async def _finish(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
     if busy:
         return (f"Tasks are still being worked on: {', '.join(busy)}. End your turn; you are woken when they settle. "
                 "Or cancel them with `plan`."), True, None
+    if waiting := plan.undecided(run):
+        return (f"Tasks wait for your decision: {', '.join(waiting)}. Settle each with `decide`: accept it as "
+                "delivered, or send it back with what to do instead."), True, None
     if pending and not run.budget.winding_down:
         return (f"Tasks have not started: {', '.join(pending)}. Cancel them with `plan` if they are not needed, or "
                 "fix what blocks them."), True, None
@@ -264,5 +348,5 @@ async def _finish(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
 _HANDLERS = {
     "plan": _plan, "send_message": _send_message, "post": _post, "store_write": _store_write,
     "store_update": _store_change("update"), "store_delete": _store_change("delete"),
-    "report": _report, "verdict": _verdict, "finish": _finish,
+    "report": _report, "decide": _decide, "verdict": _verdict, "finish": _finish,
 }

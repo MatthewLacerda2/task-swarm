@@ -14,6 +14,8 @@ from .run import Run
 
 STATUS = {
     "done": "done: the final review passed",
+    "done_with_gaps": "done, with gaps: the final review found the result right, but not everything asked for "
+                      "could be delivered",
     "done_unverified": "finished, but the final review did not pass",
     "paused": "paused at the hard stop; `task-swarm resume` continues it",
     "stalled": "stalled: the lead stopped acting",
@@ -82,10 +84,13 @@ def render(run: Run) -> str:
     if tasks:
         lines = []
         for t in tasks:
-            line = f"- `{t['id']}` ({t['status']}): {t['title']}"
+            gaps = t["gaps"] if t["status"] in ("done", "partial") else None
+            line = f"- `{t['id']}` ({t['status']}{', with gaps' if gaps and t['status'] == 'done' else ''}): {t['title']}"
             note = t["summary"] if t["status"] == "done" else t["findings"] if t["status"] == "failed" else None
             if note:
                 line += "\n  " + " ".join(note.split())[:400]
+            if gaps:
+                line += "\n  Asked for and not delivered: " + " ".join(gaps.split())[:400]
             lines.append(line)
         out.append("## Tasks\n\nA task's files are in `work/<task id>/` and its records have that `_task`.\n\n"
                    + "\n".join(lines))

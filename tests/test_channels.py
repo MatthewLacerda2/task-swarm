@@ -24,7 +24,7 @@ async def test_a_tip_reaches_the_agents_that_come_after(make_run):
                   [call("report", summary="Did the first part.")]],
         "second": worker(summary="Did the second part."),
         "second.review1": [[call("post", channel="github-api", text="Confirmed: the web pages work.")],
-                           [call("verdict", passed=True, findings="Opened the output and checked it.")]],
+                           [call("verdict", result="pass", findings="Opened the output and checked it.")]],
     })
     assert await orchestrator.execute(run) == "done"
 

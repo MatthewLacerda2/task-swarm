@@ -67,7 +67,7 @@ class FakeLLM:
         self.seen.setdefault(agent, []).append(texts_of(messages[-1]))
         script = self.scripts.get(agent)
         if script is None and ".review" in agent:
-            script = [[call("verdict", passed=True, findings="Opened the output and checked it against the brief.")]]
+            script = [[call("verdict", result="pass", findings="Opened the output and checked it against the brief.")]]
         n = sum(1 for m in messages if m["role"] == "assistant")
         if callable(script):
             step = script(messages)

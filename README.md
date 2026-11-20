@@ -13,8 +13,9 @@ what the team finds goes into a structured store where every record names its so
 task ──> planner ──plan──> lead ──> tasks (a dependency graph) ──> deliverable ──> final review
         (stronger model)              │
                                       ├─ worker does one task ──report──> reviewer ──pass──> done
-                                      │     │   ▲                            │
-                                      │     │   └────── findings ◄── fail ───┘   (up to 3 reports)
+                                      │     │   ▲                            │  │
+                                      │     │   └────── findings ◄── fail ───┘  └─ partial ──> the task's owner
+                                      │     │        (wrong work, up to 3 times)    decides: accept, or send back
                                       │     └─ may split its task once into sub-tasks it owns
                                       └─ a task starts when everything it is blocked by is done
 ```
@@ -56,9 +57,25 @@ task ──> planner ──plan──> lead ──> tasks (a dependency graph) �
   report (at most 4,000 characters), never how it was done.
 - **Nothing counts as done until someone else checked it.** Every report goes to a
   reviewer with a fresh memory, who sees the brief, what to verify and the report,
-  and re-does the checks: opens files, re-fetches sources. Failed work goes back to
-  the worker with the findings. The finished deliverable gets the same treatment
-  against `done_when`.
+  and re-does the checks: opens files, re-fetches sources. The finished deliverable
+  gets the same treatment against `done_when`.
+- **A review has three results, and each goes to whoever can act on it.** `pass`
+  closes the task. `fail` (something is wrong, or missing and within reach) goes back
+  to the worker with the findings. `partial` (what was delivered is right, something
+  asked for is missing, and trying again would not get it) goes to the task's owner,
+  who settles it with `decide`: accept the task as delivered, or send it back with
+  what to do instead. Nothing blocked by the task starts until then. Only `fail`
+  counts against the task. A worker says what it could not deliver and why in its
+  report (`not_done`), and the reviewer checks that reason before accepting it.
+  What an owner accepted as missing stays on the task and is shown to the tasks that
+  build on it, to the final reviewer and in the run's README.
+- **A reviewer checks its own findings.** The first review of a task, and of the
+  deliverable, is a full one. When the work is handed in again, the same reviewer
+  checks that each finding was fixed instead of a new reviewer starting over with a
+  new list (up to three reviews). A new reviewer takes over, with the earlier
+  findings, only when the first can't continue. A deliverable that is right in what
+  it says but could not be made complete ends the run as `done_with_gaps`, with what
+  is missing listed.
 - **The store is structured before the work starts.** The lead declares collections
   and fields in the plan; every write is checked (`taskswarm/store.py`). A record
   with an undeclared field, a wrong type or no `source` and `retrieved` date is
@@ -131,7 +148,8 @@ uv run task-swarm plan <run> > plan.json       # the plan a run started from
 uv run task-swarm run --plan plan.json "..."   # start from your own plan; no planner is called
 ```
 
-A run's exit code is 0 only when the final review passed.
+A run's exit code is 0 when the final review passed (`done`) or found the result right but
+incomplete (`done_with_gaps`); anything else is 1.
 
 **Bringing your own plan.** `--plan` takes a JSON file with what the `plan` tool takes:
 `goal`, `done_when`, `collections` and `tasks` (each with `id`, `title`, `brief`,
