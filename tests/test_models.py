@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import GOAL, call, lead_script, task, texts_of, tool_calls, worker
-from taskswarm import config, orchestrator, prompts
+from taskswarm import config, orchestrator, plan, prompts, status
 from taskswarm.__main__ import main
 
 HAIKU, SONNET, OPUS, FABLE = config.RANK
@@ -163,3 +163,61 @@ def test_the_rule_is_in_what_agents_are_told():
     text = prompts.system_prompt(config.RunConfig(run_id="x"))
     assert "You may contest a premise; you may never override it." in text
     assert "Work that departs from it on the worker's own judgment doesn't pass" in text
+
+
+# --- a task may run on a model of its own ---------------------------------------------------
+
+BIG = dict(run_budget=20, lead_budget=6, agent_budget=4, planner_budget=6, task_budget=10)
+
+
+async def test_a_task_runs_on_the_model_the_plan_gives_it(make_run):
+    def split(messages):
+        last = texts_of(messages[-1])
+        if not tool_calls(messages):
+            return [call("plan", tasks=[task("x", model="opus"), task("y")]),      # refused: stronger than its own
+                    call("plan", tasks=[task("x"), task("y", model="sonnet")])]
+        if "None of your sub-tasks" in last:
+            return [call("report", summary="The pieces, put together.")]
+        return "Waiting for my sub-team."
+
+    plan_input = GOAL | {"tasks": [task("judge", model="sonnet"), task("count")]}
+    run, fake = make_run({"lead": lead_script(plan_input), "judge": split, "judge.x": worker(), "judge.y": worker(),
+                          "count": worker()}, lead_model=SONNET, worker_model=HAIKU, **BIG)
+    assert await orchestrator.execute(run) == "done"
+    # a task and its reviewer run on the task's model; a piece runs on the default unless it is given one
+    assert fake.models == {"lead": SONNET, "judge": SONNET, "judge.review1": SONNET, "count": HAIKU,
+                           "count.review1": HAIKU, "judge.x": HAIKU, "judge.x.review1": HAIKU, "judge.y": SONNET,
+                           "judge.y.review1": SONNET, "final.review1": SONNET}
+    judge = "\n".join(fake.seen["judge"])
+    assert "You run on sonnet; a sub-task runs on haiku unless you give it a `model` (`haiku`, `sonnet`)" in judge
+    assert "`model` can't be `opus`: it is stronger than your own (sonnet)" in judge
+    # every call is billed at the prices of the model that made it
+    cost = {r["agent"]: r["c"] / r["n"] for r in run.db.all("SELECT agent, SUM(cost) AS c, COUNT(*) AS n FROM usage GROUP BY agent")}
+    assert cost["judge"] == pytest.approx(cost["count"] * config.prices(SONNET).output / config.prices(HAIKU).output, rel=0.5)
+    assert cost["judge"] > 5 * cost["count"]
+    # the plan, the status and the run's README say which task ran on what
+    assert "`judge` done: Task judge [sonnet]" in plan.overview(run)
+    assert "[sonnet]" in status.render(run.cfg.run_id)
+    readme = (run.cfg.run_dir / "README.md").read_text()
+    assert "some tasks on claude-sonnet-5-5" in readme and "Ran on claude-sonnet-5-5." in readme
+
+
+def test_a_task_cant_be_given_a_model_above_its_owner_or_its_budget(make_run):
+    run, _ = make_run({}, lead_model=HAIKU, worker_model=HAIKU)
+    ok, text = plan.apply(run, GOAL | {"tasks": [task("a", model="sonnet")]})
+    assert not ok and "stronger than your own (haiku)" in text and "You can give a task: `haiku`." in text
+    run, _ = make_run({}, run_id="u", lead_model=OPUS, worker_model=HAIKU, lead_budget=6)   # agent_budget stays 0.40
+    ok, text = plan.apply(run, GOAL | {"tasks": [task("a", model="opus")]})
+    assert not ok and "an agent's budget (US$ 0.40) does not cover a few of its calls" in text
+    ok, text = plan.apply(run, GOAL | {"tasks": [task("a", model="gpt")]})
+    assert not ok and "not a model this run knows" in text
+    ok, text = plan.apply(run, GOAL | {"tasks": [task("a", model="haiku"), task("b")]})
+    assert ok and run.db.task("a")["model"] == HAIKU and run.db.task("b")["model"] is None
+
+
+def test_the_prompt_says_which_models_a_task_can_have(make_run):
+    cfg = config.RunConfig(run_id="x", lead_model=SONNET, worker_model=HAIKU, **BIG)
+    told = prompts.system_prompt(cfg)
+    assert "A task runs on haiku unless you give it a `model`" in told and "sonnet for the lead's tasks" in told
+    assert "The models a task can be given: `haiku` roughly US$" in told and "; `sonnet` roughly US$" in told
+    assert "`opus`" not in told.split("The models a task can be given:")[1].split("\n")[0]

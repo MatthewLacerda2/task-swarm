@@ -43,6 +43,11 @@ def system_prompt(cfg: config.RunConfig) -> str:
         "lan_line": "The local network is not reachable." if cfg.block_lan else "",
         "data_line": "the user's own files are in /task/data (read-only), and " if cfg.data_dir else "",
         "data_section": _data_section(cfg),
+        "worker_name": config.short(cfg.worker_model),
+        "lead_name": config.short(cfg.lead_model),
+        "task_models": "; ".join(
+            f"`{config.short(m)}` roughly US$ {_call_cost(m, 5_000, 1_000, 400)} to {_call_cost(m, 40_000, 4_000, 2_000)} a call"
+            for m in cfg.task_models()),
     }
     return template.format(**values)
 
@@ -127,6 +132,8 @@ def lead_first(run: Run, planned: bool) -> str:
             blockers = json.loads(t["blocked_by"])
             after = f" (after {', '.join(blockers)})" if blockers else ""
             check = f"\n\nCheckpoint: {t['checkpoint']}" if t["checkpoint"] else ""
+            if t["model"] and t["model"] != run.cfg.worker_model:
+                check += f"\n\nModel: {config.short(t['model'])}"
             tasks.append(f"## `{t['id']}`: {t['title']}{after}\n\n{t['brief']}\n\nVerify: {t['verify']}{check}")
         parts += [
             "# The plan\n\n" + ("The user gave this plan with the task" if run.db.get_meta("plan_from") == "user"
@@ -201,6 +208,11 @@ def worker_first(run: Run, task) -> str:
     from .plan import depth
     if depth(task["id"]) < run.cfg.max_depth:
         split = "You may split it into sub-tasks if it is too much for one agent."
+        mine = run.task_model(task["id"])
+        if mine != run.cfg.worker_model:
+            names = ", ".join(f"`{config.short(m)}`" for m in run.cfg.task_models(mine))
+            split += (f" You run on {config.short(mine)}; a sub-task runs on {config.short(run.cfg.worker_model)} "
+                      f"unless you give it a `model` ({names}).")
     else:
         split = "It can't be split into sub-tasks."
     if task["parent"]:

@@ -36,6 +36,9 @@ def render(run: Run) -> str:
     reason = db.get_meta("status_reason")
     first = db.one("SELECT MIN(created) AS t FROM agents")["t"]
     models = f"lead {cfg.lead_model}, workers and reviewers {cfg.worker_model}"
+    others = sorted({t["model"] for t in db.tasks() if t["model"] and t["model"] != cfg.worker_model})
+    if others:
+        models += f" (some tasks on {', '.join(others)}; the task list says which)"
     if db.agent("planner") is not None:
         models = f"plan drafted by {cfg.plan_model}, " + models
     out = [
@@ -92,6 +95,8 @@ def render(run: Run) -> str:
                 line += "\n  " + " ".join(note.split())[:400]
             if gaps:
                 line += "\n  Asked for and not delivered: " + " ".join(gaps.split())[:400]
+            if t["model"] and t["model"] != run.cfg.worker_model:
+                line += f"\n  Ran on {t['model']}."
             if t["checkpoint"]:
                 line += (f"\n  Checkpoint: {' '.join(t['checkpoint'].split())[:300]} Reviewer's answer: "
                          f"{t['holds'] or 'none yet'}.")

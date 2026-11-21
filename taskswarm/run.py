@@ -38,15 +38,22 @@ class Run:
         """(model, effort, keep the cache for an hour) for an agent's calls.
 
         A reviewer runs on the model of whoever's work it checks: a task's reviewer on
-        the workers' model, the final reviewer on the lead's. The planner makes a few
-        calls in a row and is gone, so a five-minute cache is enough for it.
+        that task's model, the final reviewer on the lead's. A task runs on the workers'
+        model unless the plan gave it one of its own. The planner makes a few calls in a
+        row and is gone, so a five-minute cache is enough for it.
         """
         cfg = self.cfg
         if agent == "planner":
             return cfg.plan_model, cfg.plan_effort, False
         if agent == "lead" or agent.startswith("final."):
             return cfg.lead_model, cfg.effort, True
-        return cfg.worker_model, cfg.effort, True
+        return self.task_model(agent), cfg.effort, True
+
+    def task_model(self, agent: str) -> str:
+        """The model of a task's worker or reviewer, by the agent's name or the task's id."""
+        row = self.db.agent(agent)
+        task = self.db.task(row["task"] if row is not None and row["task"] else agent)
+        return (task["model"] if task is not None else None) or self.cfg.worker_model
 
 
 def open_run(cfg: config.RunConfig, client: llm.LLM, task: str | None = None) -> Run:

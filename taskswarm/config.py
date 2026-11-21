@@ -73,6 +73,11 @@ def resolve_model(name: str) -> str:
     return ALIASES.get(name.strip().lower(), name.strip())
 
 
+def short(model: str) -> str:
+    """`claude-opus-5-5` -> `opus`; a model without a short name is kept."""
+    return next((alias for alias, full in ALIASES.items() if full == model), model)
+
+
 def worst_call(model: str, max_tokens: int, prompt_tokens: int = 8_000) -> float:
     """Upper bound for one early call: the whole prompt written to the 1-hour cache, full output, +20%."""
     p = prices(model)
@@ -98,6 +103,8 @@ class RunConfig:
     # and how hard it is: the planner drafts the plan ("" = the lead plans), the lead
     # owns it and writes the deliverable, workers and their reviewers do the tasks.
     # No one hands work to a stronger model than its own: worker <= lead <= planner.
+    # `worker_model` is what a task runs on unless the plan gives that task a `model` of its own,
+    # which can be at most its owner's (the lead's for a top-level task, the parent task's for a piece).
     plan_model: str = "claude-opus-5-5"
     lead_model: str = "claude-haiku-5-5"
     worker_model: str = "claude-haiku-5-5"
@@ -161,6 +168,12 @@ class RunConfig:
             return False
         worst = worst_call(self.plan_model, self.max_tokens)
         return worst <= self.run_budget / 3 and worst <= self.planner_budget
+
+    def task_models(self, owner_model: str | None = None) -> list[str]:
+        """The models a task may be given by an owner on `owner_model` (the lead's, by default): priced,
+        no stronger than the owner's, and cheap enough that an agent's budget covers a few of its calls."""
+        top = RANK.index(owner_model or self.lead_model)
+        return [m for m in RANK[:top + 1] if 3 * worst_call(m, self.max_tokens) <= self.agent_budget]
 
     def scale_caps(self, ratio: float) -> None:
         """The per-agent and per-task caps grow with the run budget."""

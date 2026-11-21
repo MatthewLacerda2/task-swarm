@@ -32,6 +32,12 @@ task ──> planner ──plan──> lead ──> tasks (a dependency graph) �
   start. A reviewer runs on the model of whoever's work it checks. The per-agent caps
   grow with `--budget`, and a run whose caps can't cover its models is refused with
   the numbers to set.
+- **A task can run on a model of its own.** `--worker` is what tasks run on by
+  default; the plan may give one task a stronger `model`, up to its owner's (the
+  lead's for the lead's tasks, a worker's own for the pieces it splits off). That
+  puts the expensive model where judgment is: a task that splits its work and puts
+  the pieces together, or a checkpoint, on Sonnet, and the volume on Haiku. Agents
+  are told what a call costs on each model they may hand out.
 - **The lead owns the plan and puts the result together; it doesn't do the pieces.**
   The plan sets the goal, how the finished work will be checked (`done_when`), the
   structure of the store, and the tasks. Each task has a brief that stands alone and

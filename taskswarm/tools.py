@@ -25,6 +25,12 @@ _TASK = {
             "type": "array", "items": {"type": "string"},
             "description": "Tasks that must pass review first. Their reports are handed to this task's worker.",
         },
+        "model": {
+            "type": "string",
+            "description": "Optional: the model this task's worker and reviewer run on, by its short name "
+                           "(`haiku`, `sonnet`, ...). Leave it out for the run's default. It can be at most your "
+                           "own model, and a stronger model costs many times more per call: see Limits.",
+        },
         "checkpoint": {
             "type": "string",
             "description": "Only for a task that tests something the tasks blocked by it rest on and that is not "

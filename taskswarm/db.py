@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     asked INTEGER NOT NULL DEFAULT 0,  -- the latest report its reviewer was asked to check
     checkpoint TEXT,                   -- what the tasks blocked by it rest on, if it is a checkpoint
     holds TEXT,                        -- the reviewer's answer to that: yes | no | unclear
+    model TEXT,                        -- the model its worker and reviewer run on; NULL = the run's worker model
     created REAL NOT NULL,
     updated REAL NOT NULL
 );
@@ -130,7 +131,7 @@ class DB:
         self.conn.executescript(SCHEMA)
         # runs made by an older version
         have = {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}
-        for column in ("parent", "decisions", "gaps", "reviewer", "checkpoint", "holds"):
+        for column in ("parent", "decisions", "gaps", "reviewer", "checkpoint", "holds", "model"):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")
         if "fails" not in have:      # until then every review that didn't pass sent the work back

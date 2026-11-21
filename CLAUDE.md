@@ -85,7 +85,11 @@ what it does and how to run it.
   with something an agent is given anyway (a command's result, the text that woke
   it). Anything that needs an answer or changes a task goes by `send_message`.
 - **No one hands work to a stronger model than its own** (worker <= lead <= planner,
-  `RunConfig.problems`). The user picks the models before the run; agents don't.
+  `RunConfig.problems`). The user sets the ceiling before the run (`--lead`) and the
+  default (`--worker`); inside that, the plan may give a task its own `model`
+  (`tasks.model`, checked in `plan.apply`), at most its owner's, and only one whose
+  calls an agent's budget covers. `Run.call_settings` is the one place that decides
+  which model an agent's calls use. A reviewer runs on the model of the work it checks.
 - **Splitting is bounded by checks, not by trust**: depth (`max_depth`), width
   (`max_subtasks`, never one piece), money (a sub-team spends its parent task's
   budget) and scope (only the lead sets the goal and the store's structure). A new

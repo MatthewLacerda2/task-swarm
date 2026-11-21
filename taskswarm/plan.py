@@ -25,6 +25,7 @@ import logging
 import re
 import time
 
+from . import config
 from .db import OPEN
 from .run import Run
 
@@ -154,9 +155,28 @@ def apply(run: Run, inp: dict, owner: str | None = None) -> tuple[bool, str]:
             problems.append(f"{where}: `checkpoint` must say, as a question with a yes or no answer, what the tasks "
                             "blocked by it rest on (\"Can X be estimated better than a plain guess?\"). Leave it "
                             "out if the task is not a checkpoint.")
+        model = None
+        if t.get("model"):
+            # No one hands work to a stronger model than its own: the lead's tasks at most the lead's
+            # model, a worker's sub-tasks at most that worker's.
+            mine = run.task_model(owner) if owner else cfg.lead_model
+            allowed = cfg.task_models(mine)
+            model = config.resolve_model(t["model"]) if isinstance(t["model"], str) else ""
+            if model not in allowed:
+                names = ", ".join(f"`{config.short(m)}`" for m in allowed)
+                if model in config.RANK and config.RANK.index(model) > config.RANK.index(mine):
+                    why = f"it is stronger than your own ({config.short(mine)}), and no one hands work to a stronger model"
+                elif model in config.MODELS:
+                    why = (f"an agent's budget (US$ {cfg.agent_budget:.2f}) does not cover a few of its calls "
+                           f"(up to US$ {config.worst_call(model, cfg.max_tokens):.2f} each)")
+                else:
+                    why = "it is not a model this run knows"
+                problems.append(f"{where}: `model` can't be `{t['model']}`: {why}. You can give a task: {names}. "
+                                f"Leave `model` out for the default ({config.short(cfg.worker_model)}).")
+                model = None
         tasks[tid] = {
             "id": tid, "parent": owner, "title": title, "brief": brief, "verify": verify,
-            "blocked_by": blocked_by, "status": "pending", "checkpoint": checkpoint or None,
+            "blocked_by": blocked_by, "status": "pending", "checkpoint": checkpoint or None, "model": model,
         }
         touched.append(tid)
     for tid in touched:
@@ -210,14 +230,14 @@ def apply(run: Run, inp: dict, owner: str | None = None) -> tuple[bool, str]:
             t = tasks[tid]
             if tid in existing:
                 db.update_task(tid, title=t["title"], brief=t["brief"], verify=t["verify"],
-                               blocked_by=json.dumps(t["blocked_by"]), checkpoint=t["checkpoint"])
+                               blocked_by=json.dumps(t["blocked_by"]), checkpoint=t["checkpoint"], model=t["model"])
             else:
                 seq += 1
                 db.execute(
-                    "INSERT INTO tasks(id, parent, seq, title, brief, verify, blocked_by, status, checkpoint,"
-                    " created, updated) VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                    "INSERT INTO tasks(id, parent, seq, title, brief, verify, blocked_by, status, checkpoint, model,"
+                    " created, updated) VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
                     (tid, owner, seq, t["title"], t["brief"], t["verify"], json.dumps(t["blocked_by"]),
-                     t["checkpoint"], now, now),
+                     t["checkpoint"], t["model"], now, now),
                 )
     if collections:
         run.store.merge(collections)
@@ -293,6 +313,8 @@ def overview(run: Run, owner: str | None = None) -> str:
     lines = []
     for t in rows:
         line = f"- `{t['id']}` {t['status']}: {t['title']}"
+        if t["model"] and t["model"] != run.cfg.worker_model:
+            line += f" [{config.short(t['model'])}]"
         if t["checkpoint"]:
             line += " [checkpoint" + (f", answer {t['holds']}" if t["holds"] and t["status"] in ("held", "done") else "") + "]"
         blockers = json.loads(t["blocked_by"])
