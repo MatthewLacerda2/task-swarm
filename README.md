@@ -69,6 +69,19 @@ task ──> planner ──plan──> lead ──> tasks (a dependency graph) �
   report (`not_done`), and the reviewer checks that reason before accepting it.
   What an owner accepted as missing stays on the task and is shown to the tasks that
   build on it, to the final reviewer and in the run's README.
+- **A checkpoint stops the plan when what it rests on fails.** A task that tests
+  something later tasks are built on (that a quantity can be estimated, that a source
+  has what is needed) can be marked `checkpoint`, with the question it answers. Its
+  reviewer gives two answers: a verdict on the work, and `yes`, `no` or `unclear` on
+  the question. Whatever the answer, nothing blocked by the task starts until its
+  owner has read the result and ruled with `decide`, and the ruling is recorded and
+  shown to the tasks after it and to the final reviewer. Without it a plan is a
+  straight line: in one real run an estimate failed its own test and the team built
+  two ranked lists on it anyway.
+- **A reference figure is a check, never a target.** Workers are told not to scale,
+  shift or filter a result until it agrees with a known figure, and reviewers not to
+  pass work that did. Planners are told to give such a figure as something to
+  compare with, not as the answer to expect.
 - **A reviewer checks its own findings.** The first review of a task, and of the
   deliverable, is a full one. When the work is handed in again, the same reviewer
   checks that each finding was fixed instead of a new reviewer starting over with a
@@ -197,8 +210,8 @@ checking and parallel work.
 
 ## Limits today
 
-- **Sub-teams are tested with a scripted model only.** In the real runs so far no
-  worker chose to split its task.
+- **Checkpoints are tested with a scripted model only.** No real run has used one
+  yet. A checkpoint forces a recorded decision; it cannot force a good one.
 - **A reviewer checks a record against its source, not how the source was read.** Two
   runs stored different entry prices for the same product, one from the page's hidden
   structured data and one from the visible page, and both passed review.
@@ -230,7 +243,9 @@ sandbox keeps the damage inside the run's folder, and reviewers re-check sources
 treat a deliverable as checked work, not as proof. Agents can't reach your local
 network (`block_lan`, on by default; `--set block_lan=false` turns it off). A folder
 you pass with `--data` is mounted read-only for every agent at `/task/data`, so a
-large download you already have happens once.
+large download you already have happens once. If that folder has a `README.md` at its
+top, every agent is given it (up to 8,000 characters) in its instructions, so say there
+what the folder holds and where.
 
 ## License
 

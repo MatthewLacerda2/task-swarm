@@ -25,6 +25,14 @@ _TASK = {
             "type": "array", "items": {"type": "string"},
             "description": "Tasks that must pass review first. Their reports are handed to this task's worker.",
         },
+        "checkpoint": {
+            "type": "string",
+            "description": "Only for a task that tests something the tasks blocked by it rest on and that is not "
+                           "yet known to work: an estimate, a method, a source. Write it as a question with a yes or "
+                           "no answer (\"Can a shop's revenue be estimated from its listing better than a plain "
+                           "guess?\"). The reviewer answers it, and the tasks blocked by this one wait until you "
+                           "have read the result and ruled with `decide`: go on, or change the plan first.",
+        },
     },
     "required": ["id", "title", "brief", "verify"],
 }
@@ -185,9 +193,11 @@ TOOLS = [
     {
         "name": "decide",
         "description": (
-            "Owner of a task only (the lead for its tasks, a worker for its sub-tasks). Settle a task whose review "
-            "ended in `partial`: what it delivered is right, something asked for is missing, and its worker can't "
-            "supply it by trying again. Accept it as it is, or send it back with what to do instead."
+            "Owner of a task only (the lead for its tasks, a worker for its sub-tasks). Settle a task that waits "
+            "for you. One whose review ended in `partial`: what it delivered is right, something asked for is "
+            "missing, and its worker can't supply it by trying again. Or a checkpoint that passed review: its "
+            "reviewer answered whether what the plan builds on it holds, and the tasks blocked by it wait for your "
+            "ruling. Accept it, or send it back with what to do instead."
         ),
         "input_schema": {
             "type": "object",
@@ -204,7 +214,9 @@ TOOLS = [
                     "description": "With accept false, required: what the worker should do instead (a smaller "
                                    "target, another source, a different method). It is recorded on the task as your "
                                    "decision and the next reviewer checks the work against it. With accept true, "
-                                   "optional: why what exists is enough.",
+                                   "optional: why what exists is enough. For a checkpoint it is required: your "
+                                   "ruling, which is what the tasks blocked by it are told. Say why the plan stands, "
+                                   "or how you changed it (change it with `plan` first).",
                 },
             },
             "required": ["task", "accept"],
@@ -233,6 +245,13 @@ TOOLS = [
                     "type": "string",
                     "description": "With partial only: each thing asked for that is not delivered, and what you did "
                                    "to check that it can't be.",
+                },
+                "holds": {
+                    "type": "string",
+                    "enum": ["yes", "no", "unclear"],
+                    "description": "Only when the task is a checkpoint, with pass or partial: your answer to the "
+                                   "checkpoint's question, from the result. Work that is correct and shows the "
+                                   "answer is no still passes, with `no` here.",
                 },
             },
             "required": ["result", "findings"],

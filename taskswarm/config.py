@@ -79,6 +79,8 @@ def worst_call(model: str, max_tokens: int, prompt_tokens: int = 8_000) -> float
     return (prompt_tokens * p.cache_write_1h + max_tokens * p.output) / 1_000_000 * 1.2
 
 
+DATA_README_CHARS = 8_000   # how much of the data folder's README.md goes in the system prompt
+
 # % of a limit (the run's budget, an agent's calls) at which whoever is spending it is told:
 # at 80%, then every 5%, then every 1% from 95%.
 NOTICES = (80, 85, 90, 95, 96, 97, 98, 99, 100)

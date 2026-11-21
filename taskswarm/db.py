@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     brief TEXT NOT NULL,
     verify TEXT NOT NULL,
     blocked_by TEXT NOT NULL,          -- JSON list of task ids
-    status TEXT NOT NULL,              -- pending | running | reviewing | partial | done | failed | cancelled
+    status TEXT NOT NULL,              -- pending | running | reviewing | partial | held | done | failed | cancelled
     attempts INTEGER NOT NULL DEFAULT 0,   -- reports handed to a reviewer so far
     fails INTEGER NOT NULL DEFAULT 0,      -- of those, the reviews that sent the work back
     summary TEXT,                      -- the worker's latest report
@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     decisions TEXT,                    -- JSON list: what the task's owner ruled after the brief was written
     reviewer TEXT,                     -- the agent that reviews it; the same one across reports while it can go on
     asked INTEGER NOT NULL DEFAULT 0,  -- the latest report its reviewer was asked to check
+    checkpoint TEXT,                   -- what the tasks blocked by it rest on, if it is a checkpoint
+    holds TEXT,                        -- the reviewer's answer to that: yes | no | unclear
     created REAL NOT NULL,
     updated REAL NOT NULL
 );
@@ -113,7 +115,9 @@ CREATE TABLE IF NOT EXISTS events (
 
 # partial: reviewed and right as far as it goes, but something asked for is missing and its
 # worker can't supply it. It waits for its owner's decision (handlers._decide).
-OPEN = ("pending", "running", "reviewing", "partial")
+# held: a checkpoint that passed review. What the plan builds on it was tested, and its owner
+# rules on the answer before anything blocked by it starts (handlers._decide).
+OPEN = ("pending", "running", "reviewing", "partial", "held")
 
 
 class DB:
@@ -126,7 +130,7 @@ class DB:
         self.conn.executescript(SCHEMA)
         # runs made by an older version
         have = {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}
-        for column in ("parent", "decisions", "gaps", "reviewer"):
+        for column in ("parent", "decisions", "gaps", "reviewer", "checkpoint", "holds"):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")
         if "fails" not in have:      # until then every review that didn't pass sent the work back

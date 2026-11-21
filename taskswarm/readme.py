@@ -9,6 +9,7 @@ another run given it as data) reads this first and knows where to look.
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 from .run import Run
 
@@ -91,6 +92,12 @@ def render(run: Run) -> str:
                 line += "\n  " + " ".join(note.split())[:400]
             if gaps:
                 line += "\n  Asked for and not delivered: " + " ".join(gaps.split())[:400]
+            if t["checkpoint"]:
+                line += (f"\n  Checkpoint: {' '.join(t['checkpoint'].split())[:300]} Reviewer's answer: "
+                         f"{t['holds'] or 'none yet'}.")
+                rulings = [d for d in json.loads(t["decisions"] or "[]") if d.startswith("Ruling on the checkpoint: ")]
+                if rulings:
+                    line += " " + " ".join(rulings[-1].split())[:400]
             lines.append(line)
         out.append("## Tasks\n\nA task's files are in `work/<task id>/` and its records have that `_task`.\n\n"
                    + "\n".join(lines))

@@ -7,6 +7,10 @@ A review has three results, and each goes to whoever can act on it: `pass` close
 task; `fail` goes back to the worker, who can fix it; `partial` (right as far as it
 goes, something asked for is missing, another try would not get it) goes to the task's
 owner, who settles it with `decide`. Only `fail` counts against the task.
+
+A task may be a checkpoint: it tests something the tasks blocked by it rest on. Its
+reviewer also answers whether that holds (`holds`), and whatever the answer, the task
+waits for its owner's ruling (`decide`) before anything blocked by it starts.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ log = logging.getLogger("taskswarm")
 MESSAGE_CHARS = 4_000
 DELIVERABLE_MAX = 50 * 1024 * 1024
 RESULTS = ("pass", "partial", "fail")
+HOLDS = ("yes", "no", "unclear")
 NOT_DONE = "Not delivered, and why:"      # heads that part of a report, wherever the report is shown
 NOTE_MIN = 20
 
@@ -253,13 +258,20 @@ async def _verdict(run: Run, agent: str, row, closed: bool, inp: dict) -> Result
         return ("`missing` goes with `partial` only. If what is missing could still be delivered by trying again, "
                 "the result is `fail` and it belongs in `findings`. If it can't be, and the rest is right, the "
                 "result is `partial`."), True, None
+    task = run.db.task(row["task"]) if row["task"] else None
+    holds = None
+    if task is not None and task["checkpoint"] and result != "fail":
+        holds = inp.get("holds")
+        if holds not in HOLDS:
+            return ("This task is a checkpoint, so `holds` is needed: `yes`, `no` or `unclear`, your answer to its "
+                    f"question from the result. The question: {task['checkpoint']}"), True, None
     return "Verdict recorded.", False, Outcome("verdict", {"result": result, "findings": findings.strip()[:8000],
-                                                           "missing": missing[:4000]})
+                                                           "missing": missing[:4000], "holds": holds})
 
 
 async def _decide(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
-    """The owner of a task settles a partial review: the task is done as it is, or its worker continues
-    under a new decision. Until then nothing that is blocked by the task starts."""
+    """The owner of a task settles a partial review or a checkpoint: the task is done as it is, or its
+    worker continues under a new decision. Until then nothing that is blocked by the task starts."""
     db = run.db
     owner = None if row["role"] == "lead" else agent
     if owner and (closed or db.task(agent)["status"] != "running"):
@@ -273,7 +285,8 @@ async def _decide(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
         if task is None or task["parent"] != owner:
             text = f"You have no task `{tid}`."
         else:
-            text = f"`{tid}` is {task['status']}; `decide` settles a task whose review ended in `partial`."
+            text = (f"`{tid}` is {task['status']}; `decide` settles a task whose review ended in `partial`, or a "
+                    "checkpoint that passed review.")
         return (text + (f" Waiting for your decision: {', '.join(waiting)}." if waiting
                         else " No task is waiting for your decision.")), True, None
     accept = inp.get("accept")
@@ -284,11 +297,23 @@ async def _decide(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
         return f"`note` is too long ({len(note):,} > {MESSAGE_CHARS:,} characters).", True, None
     task = db.task(tid)
     if accept:
-        gaps = task["gaps"] + (f"\n\nWhy `{agent}` accepted it like this: {note}" if note else "")
-        db.update_task(tid, status="done", gaps=gaps)
-        db.event(agent, "decide", {"task": tid, "accept": True})
-        log.info("task %s accepted by %s with something missing", tid, agent)
+        fields: dict = {"status": "done"}
+        if task["checkpoint"]:
+            if len(note) < NOTE_MIN:
+                return (f"`{tid}` is a checkpoint, so `note` is needed: your ruling on its result, which the tasks "
+                        "blocked by it are told. Say why the plan stands as it is, or how you changed it. If the "
+                        "answer was not a clear yes and the plan should change, change it with `plan` first."), True, None
+            fields["decisions"] = json.dumps(json.loads(task["decisions"] or "[]") + [f"Ruling on the checkpoint: {note}"],
+                                             ensure_ascii=False)
+        if task["gaps"]:
+            fields["gaps"] = task["gaps"] + (f"\n\nWhy `{agent}` accepted it like this: {note}" if note else "")
+        db.update_task(tid, **fields)
+        db.event(agent, "decide", {"task": tid, "accept": True, "holds": task["holds"]})
+        log.info("task %s accepted by %s%s", tid, agent, " with something missing" if task["gaps"] else "")
         run.wake.set()
+        if not task["gaps"]:
+            return (f"`{tid}` is done and your ruling is recorded on it: the tasks that build on it and the final "
+                    "reviewer are told." + plan.what_next(run, owner)), False, None
         return (f"`{tid}` is done as delivered. What is missing stays recorded on it: the tasks that build on it and "
                 "the final reviewer are told. Say it in what you hand in too." + plan.what_next(run, owner)), False, None
     if run.budget.winding_down:
@@ -299,8 +324,11 @@ async def _decide(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
                 "same thing again gets the same result."), True, None
     decisions = json.loads(task["decisions"] or "[]") + [note]
     db.update_task(tid, status="running", decisions=json.dumps(decisions, ensure_ascii=False))
+    found = (f"What you delivered is right, but this is missing:\n\n{task['gaps']}" if task["gaps"] else
+             f"It passed. Your task is a checkpoint, and its reviewer's answer to the question was `{task['holds']}`:"
+             f"\n\n{task['findings']}")
     run.send(tid, "system",
-             f"Your report was reviewed. What you delivered is right, but this is missing:\n\n{task['gaps']}\n\n"
+             f"Your report was reviewed. {found}\n\n"
              f"`{agent}`, who gave you the task, decided:\n\n{note}\n\nThat decision is now part of your task. "
              "Carry on from what you have and call `report` again. This did not count as a failed review.")
     db.event(agent, "decide", {"task": tid, "accept": False})
@@ -322,8 +350,8 @@ async def _finish(run: Run, agent: str, row, closed: bool, inp: dict) -> Result:
         return (f"Tasks are still being worked on: {', '.join(busy)}. End your turn; you are woken when they settle. "
                 "Or cancel them with `plan`."), True, None
     if waiting := plan.undecided(run):
-        return (f"Tasks wait for your decision: {', '.join(waiting)}. Settle each with `decide`: accept it as "
-                "delivered, or send it back with what to do instead."), True, None
+        return (f"Tasks wait for your decision: {', '.join(waiting)}. Settle each with `decide`: accept it, or "
+                "send it back with what to do instead."), True, None
     if pending and not run.budget.winding_down:
         return (f"Tasks have not started: {', '.join(pending)}. Cancel them with `plan` if they are not needed, or "
                 "fix what blocks them."), True, None

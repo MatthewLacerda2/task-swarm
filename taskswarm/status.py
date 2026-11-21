@@ -56,6 +56,8 @@ def render(run_id: str) -> str:
             name = "  " * t["id"].count(".") + t["id"]
             state = t["status"] + ("*" if t["status"] == "done" and "gaps" in t.keys() and t["gaps"] else "")
             line = f"  {name:<28} {state:<10} reports {t['attempts']}  US$ {cost:.3f}  {t['title']}"
+            if "checkpoint" in t.keys() and t["checkpoint"]:
+                line += f"  [checkpoint{': ' + t['holds'] if t['holds'] else ''}]"
             if blockers:
                 line += f"  (after {', '.join(blockers)})"
             out.append(line)

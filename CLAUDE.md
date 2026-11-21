@@ -52,6 +52,18 @@ what it does and how to run it.
   toward `max_attempts`. A new kind of review result needs the same answer first: who
   can do something about it? What an owner accepts as missing is stored on the task
   (`tasks.gaps`) and shown wherever the task's report is shown.
+- **Checking the work is not checking the plan.** A review compares work with its
+  brief; it can pass every task of a plan that stopped making sense. So what a plan
+  rests on is tested by a task marked `checkpoint` (`tasks.checkpoint`, the question;
+  `tasks.holds`, the reviewer's answer), and that task waits in `held` for its owner's
+  ruling whatever the answer (`handlers._decide`): nothing blocked by it starts first.
+  The verdict and the answer are separate on purpose: correct work that shows a "no"
+  passes. In a real run a fleet estimate was right for 4 of 39 test cases and the
+  ranking, the city studies and the report were built on it all the same.
+- **A check compares, it never adjusts.** No prompt or brief gives a figure as a
+  target. In the same run the team divided every estimate by 26 so that the sum
+  matched a published total, which destroyed the estimate; the brief had asked for
+  that total to be "checked".
 - **Findings are re-checked by the reviewer that made them.** A task's reviewer and
   the final reviewer keep their conversation across rounds (`Orchestrator._review`,
   `_final_job`); a new one takes over, with the earlier findings, only when it can't

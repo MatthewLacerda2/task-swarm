@@ -35,7 +35,8 @@ RESERVED = {"lead", "final", "system", "planner"}
 REVIEW_RE = re.compile(r"^review\d*$")
 MIN_BRIEF = 100
 MIN_VERIFY = 20
-STARTED = ("running", "reviewing", "partial", "done", "failed")
+MIN_CHECKPOINT = 20
+STARTED = ("running", "reviewing", "partial", "held", "done", "failed")
 
 
 def _text(value: object) -> str:
@@ -148,9 +149,14 @@ def apply(run: Run, inp: dict, owner: str | None = None) -> tuple[bool, str]:
         if not isinstance(blocked_by, list) or any(not isinstance(b, str) for b in blocked_by):
             problems.append(f"{where}: `blocked_by` must be a list of task ids.")
             blocked_by = []
+        checkpoint = _text(t.get("checkpoint"))
+        if t.get("checkpoint") and len(checkpoint) < MIN_CHECKPOINT:
+            problems.append(f"{where}: `checkpoint` must say, as a question with a yes or no answer, what the tasks "
+                            "blocked by it rest on (\"Can X be estimated better than a plain guess?\"). Leave it "
+                            "out if the task is not a checkpoint.")
         tasks[tid] = {
             "id": tid, "parent": owner, "title": title, "brief": brief, "verify": verify,
-            "blocked_by": blocked_by, "status": "pending",
+            "blocked_by": blocked_by, "status": "pending", "checkpoint": checkpoint or None,
         }
         touched.append(tid)
     for tid in touched:
@@ -204,13 +210,14 @@ def apply(run: Run, inp: dict, owner: str | None = None) -> tuple[bool, str]:
             t = tasks[tid]
             if tid in existing:
                 db.update_task(tid, title=t["title"], brief=t["brief"], verify=t["verify"],
-                               blocked_by=json.dumps(t["blocked_by"]))
+                               blocked_by=json.dumps(t["blocked_by"]), checkpoint=t["checkpoint"])
             else:
                 seq += 1
                 db.execute(
-                    "INSERT INTO tasks(id, parent, seq, title, brief, verify, blocked_by, status, created, updated)"
-                    " VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-                    (tid, owner, seq, t["title"], t["brief"], t["verify"], json.dumps(t["blocked_by"]), now, now),
+                    "INSERT INTO tasks(id, parent, seq, title, brief, verify, blocked_by, status, checkpoint,"
+                    " created, updated) VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                    (tid, owner, seq, t["title"], t["brief"], t["verify"], json.dumps(t["blocked_by"]),
+                     t["checkpoint"], now, now),
                 )
     if collections:
         run.store.merge(collections)
@@ -268,8 +275,8 @@ def stuck(run: Run, owner: str | None = None) -> list[str]:
 
 
 def undecided(run: Run, owner: str | None = None) -> list[str]:
-    """An owner's tasks that were reviewed as partial and wait for its decision."""
-    return [t["id"] for t in run.db.children(owner) if t["status"] == "partial"]
+    """An owner's tasks that wait for its decision: reviewed as partial, or a checkpoint that passed."""
+    return [t["id"] for t in run.db.children(owner) if t["status"] in ("partial", "held")]
 
 
 def moving(run: Run, owner: str | None = None) -> list[str]:
@@ -286,6 +293,8 @@ def overview(run: Run, owner: str | None = None) -> str:
     lines = []
     for t in rows:
         line = f"- `{t['id']}` {t['status']}: {t['title']}"
+        if t["checkpoint"]:
+            line += " [checkpoint" + (f", answer {t['holds']}" if t["holds"] and t["status"] in ("held", "done") else "") + "]"
         blockers = json.loads(t["blocked_by"])
         if blockers and t["status"] == "pending":
             line += f" (blocked by {', '.join(blockers)})"
@@ -293,8 +302,8 @@ def overview(run: Run, owner: str | None = None) -> str:
     if bad := stuck(run, owner):
         lines.append(f"Can never start, because a task they depend on failed: {', '.join(bad)}.")
     if waiting := undecided(run, owner):
-        lines.append(f"Waiting for your decision (`decide`): {', '.join(waiting)}. What each is missing was sent "
-                     "to you when it was reviewed.")
+        lines.append(f"Waiting for your decision (`decide`): {', '.join(waiting)}. What each found or is missing "
+                     "was sent to you when it was reviewed.")
     return "\n".join(lines)
 
 

@@ -82,6 +82,21 @@ def test_prompt_states_costs_for_the_workers_model():
     assert "/task/data (read-only)" in prompts.system_prompt(config.RunConfig(run_id="x", data_dir="/srv/d"))
 
 
+def test_the_data_folders_readme_is_in_every_agents_prompt(tmp_path):
+    cfg = config.RunConfig(run_id="x", data_dir=str(tmp_path))
+    bare = prompts.system_prompt(cfg)
+    assert "It has no README.md at its top" in bare and "<data-readme>" not in bare
+    (tmp_path / "README.md").write_text("# Library\n\n| `data/hiring/` | {monthly} hiring |\n")
+    told = prompts.system_prompt(cfg)
+    assert "<data-readme>\n# Library\n\n| `data/hiring/` | {monthly} hiring |\n</data-readme>" in told
+    assert told.index("# The user's files") < told.index("# Limits")
+    (tmp_path / "README.md").write_text("x" * (config.DATA_README_CHARS + 50))
+    cut = prompts.system_prompt(cfg)
+    assert "x" * config.DATA_README_CHARS + "\n[cut here: the rest is in /task/data/README.md]" in cut
+    assert "x" * (config.DATA_README_CHARS + 1) not in cut
+    assert "The user's files" not in prompts.system_prompt(config.RunConfig(run_id="x"))
+
+
 async def test_each_role_runs_on_its_model(make_run):
     run, fake = make_run({
         "planner": [[call("plan", **(GOAL | {"tasks": [task("a")]}))]],

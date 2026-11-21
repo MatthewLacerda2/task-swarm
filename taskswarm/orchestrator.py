@@ -288,6 +288,12 @@ class Orchestrator:
                 return self._stopped(tid, out, reviewing=True)
             result, findings = out.data["result"], out.data["findings"]
             db.event(reviewer, "verdict", {"result": result})
+            if result == "pass" and task["checkpoint"]:
+                # The work is right. Whether the plan can go on from it is the owner's call, whatever the answer.
+                db.update_task(tid, status="held", findings=findings, gaps=None, holds=out.data["holds"])
+                log.info("checkpoint %s passed review, answer %s: its owner rules", tid, out.data["holds"])
+                self._tell_owner(tid, prompts.checkpoint_result(run, db.task(tid)))
+                return
             if result == "pass":
                 db.update_task(tid, status="done", findings=findings, gaps=None)
                 log.info("task %s passed review", tid)
@@ -296,10 +302,13 @@ class Orchestrator:
                 return
             if result == "partial":
                 # Right as far as it goes, and its worker can't get the rest: that is the owner's call.
-                db.update_task(tid, status="partial", findings=findings, gaps=out.data["missing"])
+                db.update_task(tid, status="partial", findings=findings, gaps=out.data["missing"],
+                               holds=out.data["holds"])
                 log.info("task %s is partial after review %d: its owner decides", tid, task["attempts"])
                 self._tell_owner(
                     tid,
+                    (prompts.checkpoint_result(run, db.task(tid)) + "\n\nIt is also incomplete. "
+                     if task["checkpoint"] else "") +
                     f"Task `{tid}` ({task['title']}) was reviewed. What it delivered is right, but something that "
                     "was asked for is missing, and the reviewer judges that its worker would not get it by trying "
                     f"again.\n\nMissing:\n{out.data['missing']}\n\nIts report:\n{task['summary']}\n\nIts files are "

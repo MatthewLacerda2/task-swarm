@@ -4,6 +4,7 @@ so it is read from one shared cache) and each role's first message."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from . import config
 from .run import Run
@@ -12,6 +13,24 @@ from .run import Run
 def _call_cost(model: str, cached: int, fresh: int, output: int) -> str:
     p = config.prices(model)
     return f"{(cached * p.cache_read + fresh * p.input + output * p.output) / 1e6:.2g}"
+
+
+def _data_section(cfg: config.RunConfig) -> str:
+    """What the user's folder says about itself, so that nobody has to think of looking."""
+    if not cfg.data_dir:
+        return ""
+    head = ("\n# The user's files\n\nThe user gave this run a folder of files, read-only at /task/data. "
+            "Before you download or build something, check whether it is already there.")
+    try:
+        text = (Path(cfg.data_dir) / "README.md").read_text(errors="replace").strip()
+    except OSError:
+        text = ""
+    if not text:
+        return f"{head} It has no README.md at its top: list it (`ls /task/data`) to see what it holds.\n"
+    if len(text) > config.DATA_README_CHARS:
+        text = text[:config.DATA_README_CHARS] + "\n[cut here: the rest is in /task/data/README.md]"
+    return (f"{head} This is its own README.md (/task/data/README.md), written before this run. "
+            f"Paths in it are relative to /task/data.\n\n<data-readme>\n{text}\n</data-readme>\n")
 
 
 def system_prompt(cfg: config.RunConfig) -> str:
@@ -23,6 +42,7 @@ def system_prompt(cfg: config.RunConfig) -> str:
         "call_high": _call_cost(cfg.worker_model, 40_000, 4_000, 2_000),
         "lan_line": "The local network is not reachable." if cfg.block_lan else "",
         "data_line": "the user's own files are in /task/data (read-only), and " if cfg.data_dir else "",
+        "data_section": _data_section(cfg),
     }
     return template.format(**values)
 
@@ -106,7 +126,8 @@ def lead_first(run: Run, planned: bool) -> str:
         for t in run.db.children(None):
             blockers = json.loads(t["blocked_by"])
             after = f" (after {', '.join(blockers)})" if blockers else ""
-            tasks.append(f"## `{t['id']}`: {t['title']}{after}\n\n{t['brief']}\n\nVerify: {t['verify']}")
+            check = f"\n\nCheckpoint: {t['checkpoint']}" if t["checkpoint"] else ""
+            tasks.append(f"## `{t['id']}`: {t['title']}{after}\n\n{t['brief']}\n\nVerify: {t['verify']}{check}")
         parts += [
             "# The plan\n\n" + ("The user gave this plan with the task" if run.db.get_meta("plan_from") == "user"
                                   else "The planner drafted this plan")
@@ -132,6 +153,37 @@ def _gaps(task) -> str:
             f"don't assume the rest:\n{task['gaps']}")
 
 
+def _ruling(task) -> str:
+    """For a checkpoint that is settled: the question, its reviewer's answer and what its owner ruled."""
+    if not task["checkpoint"] or task["status"] != "done":
+        return ""
+    rulings = [d for d in json.loads(task["decisions"] or "[]") if d.startswith("Ruling on the checkpoint: ")]
+    said = rulings[-1].removeprefix("Ruling on the checkpoint: ") if rulings else "(none recorded)"
+    return (f"\n\nIt was a checkpoint for the tasks after it. The question: {task['checkpoint']}\n"
+            f"Its reviewer's answer: {task['holds'] or 'not given'}.\nWhat its owner ruled: {said}")
+
+
+def checkpoint_result(run: Run, task) -> str:
+    """To the owner of a checkpoint whose work was reviewed and found right: the answer, and what is asked of it."""
+    tid = task["id"]
+    waiting = [t["id"] for t in run.db.children(task["parent"])
+               if t["status"] == "pending" and tid in json.loads(t["blocked_by"])]
+    if task["holds"] == "yes":
+        ask = ("If the plan still stands, call `decide` with accept true and say so in `note`.")
+    else:
+        ask = ("The answer is not a clear yes, so the tasks that wait would build on something that did not hold. "
+               "Change the plan first with `plan`: cancel or redefine the tasks that wait, add others, or settle "
+               "for a smaller result that what was found does support. Then call `decide` with accept true and say "
+               "in `note` what you changed. Going on with the plan unchanged needs a reason you would give the "
+               "user, and that reason goes in `note`.")
+    return (
+        f"Checkpoint `{tid}` ({task['title']}) was reviewed and its work is right. The tasks blocked by it rest on "
+        f"this question:\n\n{task['checkpoint']}\n\nThe reviewer's answer: {task['holds']}.\n\nThe reviewer's "
+        f"findings:\n{task['findings']}\n\nIts report:\n{task['summary']}\n\nIts files are in /task/work/{tid}/."
+        f"\n\nBlocked by it: {', '.join(waiting) or 'no task'}. Nothing blocked by it starts until you rule. {ask} "
+        "You can also send it back (accept false) with a different method to try.")
+
+
 def worker_first(run: Run, task) -> str:
     parts = [
         identity(task["id"], "worker"),
@@ -140,6 +192,12 @@ def worker_first(run: Run, task) -> str:
         f"# How your work will be checked\n\n{task['verify']}",
     ]
     owner = task["parent"] or "lead"
+    if task["checkpoint"]:
+        parts.append(
+            f"# Your task is a checkpoint\n\nThe tasks after yours rest on this question:\n\n{task['checkpoint']}"
+            f"\n\nThey do not start until `{owner}` has read your result. So test it for real and report the "
+            "answer plainly, with the numbers behind it. A clear no is a good result here: it saves the work that "
+            "would have been built on it. A yes obtained by adjusting the result or the test is the worst one.")
     from .plan import depth
     if depth(task["id"]) < run.cfg.max_depth:
         split = "You may split it into sub-tasks if it is too much for one agent."
@@ -153,7 +211,7 @@ def worker_first(run: Run, task) -> str:
     if blockers:
         lines = ["# Reports of the tasks yours builds on"]
         for b in blockers:
-            lines.append(f"## `{b['id']}`: {b['title']}\n\n{b['summary']}{_gaps(b)}\n\n"
+            lines.append(f"## `{b['id']}`: {b['title']}\n\n{b['summary']}{_gaps(b)}{_ruling(b)}\n\n"
                          f"Its files are in /task/work/{b['id']}/.")
         parts.append("\n\n".join(lines))
     parts.append(_store(run))
@@ -191,8 +249,22 @@ def review_again(run: Run, task) -> str:
         "What you already checked and found right stands unless the worker changed it, so don't start the review "
         "over. A new problem counts only if the work doesn't meet `verify` because of it; anything smaller goes in "
         "`findings` as a remark, without failing the work. Then give your `verdict` again; in `findings`, say for "
-        "each earlier problem whether it is fixed.",
+        "each earlier problem whether it is fixed." +
+        (" The task is a checkpoint: with `pass` or `partial`, give `holds` again." if task["checkpoint"] else ""),
     ])
+
+
+def _checkpoint_review(task) -> list[str]:
+    if not task["checkpoint"]:
+        return []
+    return [f"# This task is a checkpoint\n\nThe tasks after it rest on this question:\n\n{task['checkpoint']}\n\n"
+            "You give two separate answers. The `verdict` is about the work: was the test done properly and is "
+            "what the report says true. `holds` is about the question: `yes`, `no` or `unclear`, from the result. "
+            "Correct work that shows the answer is no gets `pass` with `holds: no`. Look hardest at how the test "
+            "was set up: whether it could have come out the other way, whether the cases it was run on resemble "
+            "the cases the later tasks will meet, and whether it beats the plainest alternative (a constant "
+            "guess, last year's value). If the result only supports the question after being adjusted to do so, "
+            "the answer is `no`."]
 
 
 def reviewer_first(run: Run, reviewer: str, task, previous: str | None = None) -> str:
@@ -201,6 +273,7 @@ def reviewer_first(run: Run, reviewer: str, task, previous: str | None = None) -
         f"# The goal of the whole team\n\n{run.db.get_meta('goal')}",
         f"# The task under review: `{task['id']}`, {task['title']}\n\n{task['brief']}",
         f"# What to check\n\n{task['verify']}",
+        *_checkpoint_review(task),
         *_handed_in(task),
         *([f"# What the previous reviewer found\n\nIt could not continue, so the review is yours. The worker has "
            f"reworked the task since.\n\n{previous}"] if previous else []),
@@ -227,6 +300,8 @@ def _final_tasks(run: Run) -> str:
             line += f"\n  Report: {t['summary'][:600]}"
             if t["gaps"]:
                 line += f"\n  Accepted by the lead with this missing: {t['gaps'][:600]}"
+            if t["checkpoint"]:
+                line += "\n  " + " ".join(_ruling(t).split())[:900]
         elif t["status"] == "failed":
             line += f"\n  Failed: {(t['findings'] or '')[:400]}"
         tasks.append(line)
@@ -246,6 +321,9 @@ def final_first(run: Run, reviewer: str, deliverable: str, summary: str, previou
                       f"(records updated or deleted after they were stored): {run.store.changes}, in changes.jsonl.",
         "Check the deliverable against the store and the sources, not only against itself: a claim in it should "
         "trace to a record or a file. Check too that it is honest about what was not found.",
+        "Check too that it answers what the user asked. Where a checkpoint's answer (above) was `no` or `unclear`, "
+        "see what the lead did about it: a deliverable that still presents as a result what the checkpoint showed "
+        "does not work gets `fail`, however clearly it lists the weakness further down.",
         "Your verdict: `fail` when something the deliverable says is wrong, unsupported or contradicts itself, or "
         "when it hides something missing; the lead can fix that. `partial` when everything it says holds and it "
         "states plainly what is missing, but part of what was asked for could not be delivered: the user then "
