@@ -38,6 +38,8 @@ def render(run_id: str) -> str:
         hit = 100 * (u["r"] or 0) / prompt if prompt else 0
         out.append(f"Calls {u['n']}, cache hit {hit:.0f}%, output {u['o'] or 0:,} tokens, compactions {u['c'] or 0}, "
                    f"avg latency {u['l'] or 0:.1f} s, US$ {spent / u['n']:.4f} per call")
+    if (searches := _meta(db, "searches", 0)) or cfg.max_searches:
+        out.append(f"Web searches {searches}" + (f" of {cfg.max_searches}" if cfg.max_searches else " (no limit)"))
     planner = db.execute("SELECT spent, calls FROM agents WHERE id = 'planner'").fetchone()
     if planner:
         out.append(f"Plan drafted by {cfg.plan_model}: {planner['calls']} calls, US$ {planner['spent']:.3f}")

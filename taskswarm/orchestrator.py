@@ -21,6 +21,7 @@ from .agent import run_agent
 from .db import OPEN
 from .handlers import Outcome
 from .run import Run
+from .searches import SearchGate
 
 log = logging.getLogger("taskswarm")
 
@@ -47,6 +48,7 @@ class Orchestrator:
         self.jobs: dict[str, asyncio.Task] = {}
         self.waiting: set[str] = set()      # tasks whose worker is idle while its sub-team works
         self.stalls = 0
+        self.gate = SearchGate(run)
 
     # --- the loop ----------------------------------------------------------------------
 
@@ -55,6 +57,8 @@ class Orchestrator:
         if db.get_meta("status") in FINISHED:
             return db.get_meta("status")
         db.set_meta("status", "running")
+        await self.gate.start()
+        run.search_port = self.gate.port
         if db.agent("lead") is not None:
             run.send("lead", "system", "The run was interrupted and has resumed.\n" + plan.overview(run))
         elif self._use_planner():
@@ -89,6 +93,7 @@ class Orchestrator:
             for job in self.jobs.values():
                 job.cancel()
             await asyncio.gather(*self.jobs.values(), return_exceptions=True)
+            await self.gate.close()
         status = db.get_meta("status")
         db.event(None, "stopped", {"status": status, "spent": run.budget.spent})
         log.info("stopped: %s (US$ %.3f spent)", status, run.budget.spent)
@@ -164,18 +169,27 @@ class Orchestrator:
         run = self.run
         if self.db.agent("lead") is None:
             return
+        # The lead and the workers at work are told; reviewers are not, a review is not cut short.
+        if (searched := self.gate.crossed()) is not None:
+            for name in ["lead", *self._workers_at_work()]:
+                run.send(name, "system", prompts.search_notice(run.cfg, searched, self.gate.used), quiet=True)
         mark = run.budget.crossed()
         if mark is None:
             return
-        # The lead and the workers at work are told; reviewers are not, a review is not cut short.
         run.send("lead", "system", prompts.budget_notice_lead(run, mark), quiet=mark < 100)
-        for name in run.active:
-            row, task = self.db.agent(name), self.db.task(name)
-            if row["role"] == "worker" and task is not None and task["status"] == "running":
-                run.send(name, "system", prompts.budget_notice_worker(run, mark), quiet=True)
+        for name in self._workers_at_work():
+            run.send(name, "system", prompts.budget_notice_worker(run, mark), quiet=True)
         if mark >= 100:
             self.db.event(None, "wind_down", {"spent": run.budget.spent})
             self._wind_down_teams()
+
+    def _workers_at_work(self) -> list[str]:
+        out = []
+        for name in sorted(self.run.active):
+            row, task = self.db.agent(name), self.db.task(name)
+            if row["role"] == "worker" and task is not None and task["status"] == "running":
+                out.append(name)
+        return out
 
     def _wind_down_teams(self) -> None:
         """The budget is used up: sub-tasks that never started are dropped and their owners told."""

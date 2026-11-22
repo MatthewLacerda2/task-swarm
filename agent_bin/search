@@ -1,26 +1,63 @@
 #!/usr/bin/env python3
 """search "query" [-n N] [--page P] [--json]
+search --left
 
-Web search through the local SearXNG. Prints title, URL and snippet per result.
+Web search through the local SearXNG. Prints title, URL and snippet per result, then how
+many of the run's searches are used. `--left` prints only that count and costs nothing.
 """
 
 import argparse
 import json
 import sys
 import textwrap
+import urllib.error
 import urllib.parse
 import urllib.request
 
-ENDPOINT = "http://127.0.0.1:8888/search"
+BASE = "http://127.0.0.1:8888"
+ENDPOINT = f"{BASE}/search"
+
+
+def count_line(used, limit) -> str:
+    """What the run has used, from the numbers the search gate sends; "" when it sends none."""
+    try:
+        used, limit = int(used), int(limit)
+    except (TypeError, ValueError):
+        return ""
+    if limit <= 0:
+        return f"[{used} searches made in this run]"
+    left = max(0, limit - used)
+    line = f"[search {used} of {limit} for the whole run, {left} left"
+    if left == 0:
+        return line + ": `search` refuses from now on]"
+    if used * 5 >= limit * 4:
+        return line + ": keep them for what can't be found another way]"
+    return line + "]"
+
+
+def left() -> int:
+    try:
+        with urllib.request.urlopen(f"{BASE}/count", timeout=15) as r:
+            data = json.load(r)
+        line = count_line(data["used"], data["limit"])
+    except Exception:  # noqa: BLE001
+        line = ""
+    print(line or "this run does not count its searches")
+    return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="search", description="Web search (SearXNG).")
-    ap.add_argument("query", nargs="+")
+    ap.add_argument("query", nargs="*")
     ap.add_argument("-n", type=int, default=10, help="max results (default 10)")
     ap.add_argument("--page", type=int, default=1)
     ap.add_argument("--json", action="store_true", help="raw JSON results")
+    ap.add_argument("--left", action="store_true", help="how many of the run's searches are used; not a search")
     args = ap.parse_args()
+    if args.left:
+        return left()
+    if not args.query:
+        ap.error("a query is required")
 
     params = urllib.parse.urlencode({
         "q": " ".join(args.query),
@@ -28,8 +65,17 @@ def main() -> int:
         "pageno": args.page,
     })
     try:
-        with urllib.request.urlopen(f"{ENDPOINT}?{params}", timeout=30) as r:
+        with urllib.request.urlopen(f"{ENDPOINT}?{params}", timeout=60) as r:
             data = json.load(r)
+            counted = count_line(r.headers.get("X-Searches-Used"), r.headers.get("X-Searches-Limit"))
+    except urllib.error.HTTPError as e:
+        if e.code == 429 and e.headers.get("X-Searches-Limit"):
+            print(f"search refused: the run's {e.headers['X-Searches-Limit']} web searches are used up. Work from "
+                  "the pages and files that exist. Fetching a page whose address you know is not a search and "
+                  "still works.", file=sys.stderr)
+            return 2
+        print(f"search failed: {e}", file=sys.stderr)
+        return 1
     except Exception as e:  # noqa: BLE001
         print(f"search failed: {e}", file=sys.stderr)
         return 1
@@ -38,16 +84,25 @@ def main() -> int:
     if args.json:
         json.dump(results, sys.stdout, indent=1)
         print()
+        if counted:
+            print(counted, file=sys.stderr)      # stdout stays valid JSON
         return 0
     if not results:
-        print("no results")
-        return 0
+        down = ", ".join(f"{e[0]}: {e[1]}" for e in data.get("unresponsive_engines") or [] if len(e) >= 2)
+        if down:
+            print(f"no results, because the search engines did not answer ({down}). This says nothing about "
+                  "whether the thing exists, and it was not counted as a search. Try again later, or go to a "
+                  "source directly.")
+        else:
+            print("no results")
     for i, r in enumerate(results, 1):
         print(f"{i}. {r.get('title', '').strip()}")
         print(f"   {r.get('url', '')}")
         snippet = (r.get("content") or "").strip()
         if snippet:
             print(textwrap.indent(textwrap.fill(snippet[:300], 88), "   "))
+    if counted:
+        print(counted)
     return 0
 
 

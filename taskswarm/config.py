@@ -26,7 +26,8 @@ API_KEY_FILE = Path(LOCAL.get("api_key_file", str(Path.home() / ".config" / "tas
 
 UV_BINARY = Path.home() / ".local" / "bin" / "uv"
 
-# Host port reachable from inside the sandbox (pasta -T): the SearXNG behind `search`.
+# SearXNG's port on the host. Inside a sandbox the same port leads to the run's search gate
+# (searches.py), which counts each search and passes it on to SearXNG.
 SEARXNG_PORT = 8888
 
 
@@ -135,6 +136,7 @@ class RunConfig:
     max_tokens: int = 12_000
     output_chars: int = 4_000
     max_calls: int = 150             # model calls one agent may make on one assignment
+    max_searches: int = 100          # web searches in the whole run, everyone's together; 0 = no limit
     # Context
     compaction_trigger: int = 85_000
     refuse_above: int = 99_000
@@ -159,6 +161,7 @@ class RunConfig:
         if "model" in data:                       # one model for the whole team
             data.setdefault("worker_model", data["model"])
             data.setdefault("lead_model", data["model"])
+        data.setdefault("max_searches", 0)        # a run from before searches had a limit keeps none
         known = {f.name for f in fields(cls)}
         return cls(**{k: v for k, v in data.items() if k in known})
 

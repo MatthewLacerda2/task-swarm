@@ -135,6 +135,10 @@ Under it, reused from [swarm](https://github.com/MatthewLacerda2/swarm):
   run budget is used, then at every 5%, then at every 1% from 95%, and asked to put
   what is left where it is worth most. An agent gets the same notices about its own
   calls for one assignment (150 by default); at the limit it is stopped at once.
+- **Web searches are limited per run.** A run has 100 searches for the whole team
+  (`--set max_searches=300` changes it, `0` removes the limit). Every search shows the
+  count, `search --left` gives it without searching, the same notices apply, and past
+  the limit a search is refused. Reading a page whose address is known is not a search.
 - **Cost:** every agent shares one cached prompt, whatever its role, and
   conversations are compacted before they reach the 100k-token price tier.
 - **Resumable:** all state is in SQLite and plain files, written before each next

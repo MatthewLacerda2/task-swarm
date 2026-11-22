@@ -61,7 +61,7 @@ class _Box:
             await self.close()
             work_dir(self.run, self.agent)
             (self.run.cfg.run_dir / "outputs" / self.agent).mkdir(parents=True, exist_ok=True)
-            self.box = sandbox.Sandbox(sandbox.agent_spec(self.run.cfg, self.agent))
+            self.box = sandbox.Sandbox(sandbox.agent_spec(self.run.cfg, self.agent, self.run.search_port))
             await self.box.start()
         return self.box
 

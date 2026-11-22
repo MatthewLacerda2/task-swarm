@@ -26,6 +26,7 @@ class Run:
     active: set[str] = field(default_factory=set)                     # agents inside a model/command loop now
     locks: dict[str, asyncio.Lock] = field(default_factory=dict)      # one conversation is never run twice at once
     mail: dict[str, asyncio.Event] = field(default_factory=dict)      # set when a message for that agent arrives
+    search_port: int = config.SEARXNG_PORT                            # the search gate's, once the run is going
 
     def send(self, to: str, sender: str, body: str, quiet: bool = False) -> None:
         """Put a message in an agent's inbox. `quiet` waits for its next turn instead of waking it."""

@@ -75,6 +75,13 @@ what it does and how to run it.
   reviewers: a review is not cut short for money. The calls limit is told to whoever is
   spending it and is a hard stop. Without the notices, workers spent every call on
   useful work and never handed any of it in (seen in a real run).
+- **Searches are a shared limit, counted outside the sandbox.** The sandbox's search
+  port leads to the run's gate (`searches.py`), not to SearXNG, so every search counts
+  however it is made and none goes around the count. A run has `max_searches` (100) for
+  everyone; the same schedule of notices applies, and past the limit a search is
+  refused. Fetching a known address is not a search. A search the engines behind
+  SearXNG refused to answer is not counted, and the agent is told it says nothing about
+  what exists: one run read blocked engines as "nothing published" (seen in a real run).
 - **The store is corrected in the store.** A wrong record is updated or deleted
   (`Store.change`), never left in place with the right version kept in a file. Who
   may change a record follows who owns the task that wrote it; every change is

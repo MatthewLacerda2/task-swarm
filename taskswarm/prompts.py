@@ -33,6 +33,16 @@ def _data_section(cfg: config.RunConfig) -> str:
             f"Paths in it are relative to /task/data.\n\n<data-readme>\n{text}\n</data-readme>\n")
 
 
+def _searches_line(cfg: config.RunConfig) -> str:
+    if not cfg.max_searches:
+        return ""
+    return (f"- The run has {cfg.max_searches} web searches in all, shared by everyone. Each `search` is one, and so "
+            "is each further page of results; one the search engines did not answer is not counted. Every search shows how many are used, and `search --left` says it "
+            "without searching. The lead and the workers are told when 80% are used, then at every 5%, then at "
+            "every 1% from 95%. Past the limit `search` refuses. Fetching a page whose address you know is not a "
+            "search and has no limit: search to find where something is, then read it there.\n")
+
+
 def system_prompt(cfg: config.RunConfig) -> str:
     template = (config.PROMPTS / "system.md").read_text()
     values = cfg.to_dict() | {
@@ -43,6 +53,7 @@ def system_prompt(cfg: config.RunConfig) -> str:
         "lan_line": "The local network is not reachable." if cfg.block_lan else "",
         "data_line": "the user's own files are in /task/data (read-only), and " if cfg.data_dir else "",
         "data_section": _data_section(cfg),
+        "searches_line": _searches_line(cfg),
         "worker_name": config.short(cfg.worker_model),
         "lead_name": config.short(cfg.lead_model),
         "task_models": "; ".join(
@@ -108,6 +119,18 @@ def budget_notice_lead(run: Run, mark: int) -> str:
     return (f"Run budget: {mark}% used ({_budget(run)}). Put what is left where it is worth most: if not "
             "everything will fit, cancel the tasks that matter least to the goal so that the ones that "
             "matter most can finish. The workers have been told to do the same inside their tasks.")
+
+
+def search_notice(cfg: config.RunConfig, mark: int, used: int) -> str:
+    n = cfg.max_searches
+    if mark >= 100:
+        return (f"The run's {n} web searches are used up: `search` refuses from now on. Work from the pages and "
+                "files that exist; fetching a page whose address you know is not a search and still works. Say in "
+                "what you hand in what could not be looked up.")
+    if mark > 80:
+        return f"Web searches: {mark}% used ({used} of {n} for the whole run)."
+    return (f"Web searches: {mark}% used ({used} of {n} for the whole run, shared by everyone). Keep the rest for "
+            "what can't be found another way: a page whose address you know costs no search.")
 
 
 def budget_notice_worker(run: Run, mark: int) -> str:

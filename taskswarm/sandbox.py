@@ -71,6 +71,7 @@ class SandboxSpec:
     slice: str = "task-swarm.slice"
     block_lan: bool = False         # nftables egress filter for private addresses
     state_dir: Path | None = None   # host-only dir for the nft rules file
+    search_port: int = config.SEARXNG_PORT   # host port the sandbox's search port leads to
 
 
 @dataclass
@@ -203,7 +204,7 @@ def full_command(spec: SandboxSpec, unit: str) -> list[str]:
     pasta = [
         "pasta", "--quiet", "--foreground", "--config-net", "--no-map-gw",
         "-t", "none", "-u", "none", "-U", "none",
-        "-T", str(config.SEARXNG_PORT),
+        "-T", f"{config.SEARXNG_PORT}:{spec.search_port}",
         "--",
     ]
     if spec.block_lan:
@@ -379,7 +380,7 @@ def agent_env(agent_id: str) -> dict[str, str]:
     }
 
 
-def agent_spec(cfg: config.RunConfig, agent_id: str) -> SandboxSpec:
+def agent_spec(cfg: config.RunConfig, agent_id: str, search_port: int = config.SEARXNG_PORT) -> SandboxSpec:
     """Everyone's folders, the store, the channels, the deliverable and saved outputs read-only; its own
     folder read-write."""
     run_dir = cfg.run_dir
@@ -407,4 +408,5 @@ def agent_spec(cfg: config.RunConfig, agent_id: str) -> SandboxSpec:
         tasks=cfg.sandbox_tasks,
         block_lan=cfg.block_lan,
         state_dir=run_dir / "sys",
+        search_port=search_port,
     )
