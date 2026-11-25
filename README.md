@@ -240,6 +240,11 @@ checking and parallel work.
   Sonnet lead slept two minutes inside a command instead of ending its turn. Now a
   command that sleeps 15 seconds or more is not run while its agent has tasks open.
   A loop of short sleeps still gets through.
+- **A run stopped midway resumes only if the `--data` folder's `README.md` is
+  unchanged.** That file is part of every agent's instructions, and a saved
+  conversation is tied to the instructions it started with. In a real case the README
+  was edited after a power cut and 11 of 16 runs failed on `resume` with an API error
+  400 until the old text was put back.
 - **What goes in a channel is advice, not a check.** The tool checks a post's size
   and the channel's name; nothing stops an agent from posting a finding there
   instead of in the store.

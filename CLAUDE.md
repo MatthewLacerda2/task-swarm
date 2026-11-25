@@ -14,6 +14,8 @@ what it does and how to run it.
 - `taskswarm/tools.py`, `taskswarm/handlers.py`: the tools and what each does.
 - `taskswarm/prompts/system.md`: what every agent is told.
 - `taskswarm/sandbox.py`, `taskswarm/safeio.py`: what keeps agents inside their folder.
+- `connectors/`: scripts that turn regulators' open files into the tables a run gets
+  with `--data`, and a description of each table. Not part of the tool; no data here.
 
 ## Rules
 
